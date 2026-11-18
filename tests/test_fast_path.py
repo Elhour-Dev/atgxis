@@ -202,3 +202,45 @@ def test_transcribe_clear_error_for_clip_without_audio(tmp_path, monkeypatch):
     captions._MODEL.clear()
     with pytest.raises(captions.CaptionsUnavailable, match="no audio"):
         captions.transcribe(clip, Config())
+
+
+def test_server_ignores_browser_aborts_and_serves_ranges_correctly(tmp_path, capfd):
+    """WinError 10053 regression: a browser that cancels a video download must not spam tracebacks or break the server."""
+    import socket
+    from autoclip import review
+    d = tmp_path / "ch" / "s"
+    d.mkdir(parents=True)
+    big = d / "c.mp4"
+    big.write_bytes(bytes(range(256)) * 40000)                      # ~10 MB
+    srv = review.QuietServer(("127.0.0.1", 0), review.make_handler(review.Store(tmp_path, Config())))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    port = srv.server_address[1]
+    for _ in range(5):                                              # ask for the whole file, read a bit, then slam the door (RST)
+        s = socket.create_connection(("127.0.0.1", port))
+        s.sendall(b"GET /files/ch/s/c.mp4 HTTP/1.1\r\nHost: x\r\n\r\n")
+        s.recv(1000)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, b"\x01\x00\x00\x00\x00\x00\x00\x00")
+        s.close()
+    time.sleep(0.5)
+
+    def get(rng=None):
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/files/ch/s/c.mp4", headers={"Range": rng} if rng else {})
+        try:
+            with urllib.request.urlopen(req) as r:
+                return r.status, r.read(), r.headers
+        except urllib.error.HTTPError as e:
+            return e.code, b"", e.headers
+
+    data = big.read_bytes()
+    code, body, _ = get()
+    assert code == 200 and body == data                              # server still fine after the aborts, file intact
+    code, body, h = get("bytes=100-199")
+    assert code == 206 and body == data[100:200] and h["Content-Range"] == f"bytes 100-199/{len(data)}"
+    code, body, _ = get("bytes=-500")
+    assert code == 206 and body == data[-500:]                       # suffix range = LAST 500 bytes (used to be wrong)
+    code, body, _ = get(f"bytes={len(data)}-")
+    assert code == 416                                                # past the end
+    assert get("bytes=abc-")[0] == 200                               # garbage Range header: just send the file
+    srv.shutdown()
+    out = capfd.readouterr()
+    assert "Traceback" not in out.err and "10053" not in out.err and "Broken pipe" not in out.err

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import re
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -284,6 +285,16 @@ class Store:
         return n
 
 
+class QuietServer(ThreadingHTTPServer):
+    """Browsers abort connections constantly (WinError 10053 / broken pipe). That is normal: don't print a traceback."""
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        if isinstance(sys.exc_info()[1], (ConnectionError, TimeoutError)):
+            return
+        super().handle_error(request, client_address)
+
+
 def make_handler(store: Store):
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
@@ -321,18 +332,40 @@ def make_handler(store: Store):
                 return self._serve_file(f)
             self._send(404, b"not found", "text/plain")
 
-        def _serve_file(self, f: Path):          # supports Range so seeking in <video> works
-            size, start, end = f.stat().st_size, 0, f.stat().st_size - 1
-            rng = self.headers.get("Range", "")
-            if rng.startswith("bytes="):
-                a, _, b = rng[6:].partition("-")
-                start = int(a) if a else 0
-                end = min(int(b), size - 1) if b else size - 1
-            with open(f, "rb") as fh:
-                fh.seek(start)
-                data = fh.read(end - start + 1)
-            self._send(206 if rng else 200, data, mimetypes.guess_type(f.name)[0] or "video/mp4",
-                       {"Accept-Ranges": "bytes", "Content-Range": f"bytes {start}-{end}/{size}"})
+        def _serve_file(self, f: Path):
+            """Stream a video in chunks with Range support (seeking). Browsers cancel transfers all the time
+            (seeking, reloading); that raises ConnectionError mid-send, which is normal and silently ignored."""
+            size = f.stat().st_size
+            start, end, partial = 0, size - 1, False
+            m = re.fullmatch(r"bytes=(\d*)-(\d*)", self.headers.get("Range", "").strip())
+            if m and (m[1] or m[2]):
+                if m[1]:
+                    start = int(m[1])
+                    end = min(int(m[2]), size - 1) if m[2] else size - 1
+                else:                                   # "bytes=-500" means the LAST 500 bytes
+                    start = max(size - int(m[2]), 0)
+                if start >= size or start > end:
+                    return self._send(416, b"", "text/plain", {"Content-Range": f"bytes */{size}"})
+                partial = True
+            try:
+                self.send_response(206 if partial else 200)
+                self.send_header("Content-Type", mimetypes.guess_type(f.name)[0] or "video/mp4")
+                self.send_header("Content-Length", str(end - start + 1))
+                self.send_header("Accept-Ranges", "bytes")
+                if partial:
+                    self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+                self.end_headers()
+                with open(f, "rb") as fh:
+                    fh.seek(start)
+                    left = end - start + 1
+                    while left > 0:
+                        chunk = fh.read(min(262144, left))
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        left -= len(chunk)
+            except ConnectionError:
+                pass
 
         def do_POST(self):
             if self.headers.get("Origin") and urlparse(self.headers["Origin"]).hostname not in ("127.0.0.1", "localhost"):
@@ -387,7 +420,7 @@ def make_handler(store: Store):
 
 def serve(root: Path, cfg: Config, port: int = 8765, open_browser: bool = True):
     root.mkdir(parents=True, exist_ok=True)
-    srv = ThreadingHTTPServer(("127.0.0.1", port), make_handler(Store(root, cfg)))
+    srv = QuietServer(("127.0.0.1", port), make_handler(Store(root, cfg)))
     url = f"http://127.0.0.1:{port}/"
     print(f"Review page: {url}   (Ctrl+C to stop)")
     if open_browser:
