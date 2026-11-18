@@ -42,6 +42,10 @@ def ffmpeg_exe() -> str:
     return shutil.which("ffmpeg") or "ffmpeg"
 
 
+def ffprobe_exe() -> str:
+    return shutil.which("ffprobe") or "ffprobe"
+
+
 def streamlink_cmd(url: str, quality: str) -> list[str]:
     exe = shutil.which("streamlink") or "streamlink"
     return [exe, "--stdout", "--loglevel", "warning", "--retry-streams", "5", "--retry-max", "3", url, quality]

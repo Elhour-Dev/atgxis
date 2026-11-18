@@ -35,15 +35,26 @@ class Config:
     chat_grace_s: float = 3.0   # wait this long for late chat messages (YouTube batches ~5s)
 
     # --- clip cutting ---
-    pre_s: int = 30             # chat reacts AFTER the moment, so start this much earlier
-    post_s: int = 12
-    max_clip_s: int = 120
+    # Drafts are cut by STREAM COPY (instant, no CPU, no quality loss) with generous context.
+    # You trim in the review page; only the clips you export get one precise encode.
+    cut_mode: str = "copy"      # "copy" (fast draft) | "encode" (exact window, ~10s of CPU per clip)
+    pre_s: int = 40             # draft context before the spike (free to be generous in copy mode)
+    post_s: int = 15
+    max_clip_s: int = 150
+    reaction_lag_s: int = 8     # chat reacts this long after the moment; used for the suggested trim
+    suggest_max_s: int = 45     # suggested trim never longer than this (short clips perform best)
+    dup_overlap: float = 0.6    # skip a clip that overlaps an existing one by this much
     encoder: str = "libx264"    # try h264_nvenc / h264_qsv / h264_amf for a hardware encoder
     preset: str = "veryfast"
-    crf: int = 21
-    cut_workers: int = 2
-    vertical: str = "on_demand"  # "on_demand" (button in review page) | "auto" | "off"
+    crf: int = 20
+    cut_workers: int = 2        # total simultaneous encodes across ALL streams
+    vertical: str = "on_demand"  # "on_demand" (tick the box in review) | "auto" (also export a vertical of the suggested trim) | "off"
     vertical_mode: str = "blur"  # "blur" (full frame on blurred bg) | "crop" (center crop)
+
+    # --- captions (optional: pip install faster-whisper) ---
+    whisper_model: str = "small"    # tiny/base/small/medium; "small" is a good speed/accuracy balance
+    whisper_device: str = "auto"    # auto picks the GPU if CUDA is available
+    caption_font: str = "Arial"
 
     # --- recording ---
     quality: str = "720p60,720p,480p,best"   # lower than source = less disk, no CPU cost (stream copy)

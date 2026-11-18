@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 
 from .config import Config
-from .recorder import Segment, ffmpeg_exe
+from .recorder import Segment, ffmpeg_exe, ffprobe_exe
 
 log = logging.getLogger("autoclip.cut")
 
@@ -46,6 +46,94 @@ def cut_clip(segs: list[Segment], a: float, b: float, out: Path, cfg: Config) ->
         listing.unlink(missing_ok=True)
     if r.returncode != 0 or not out.exists():
         log.error("ffmpeg cut failed: %s", r.stderr.strip()[-400:])
+        out.unlink(missing_ok=True)
+        return False
+    return True
+
+
+def _filters(cfg: Config, vertical: bool, ass: str | None) -> list[str]:
+    """ffmpeg filter arguments for: optional 9:16 layout, optional burned-in captions (ass file name, relative to cwd)."""
+    if not vertical and not ass:
+        return []
+    if not vertical:
+        return ["-vf", f"ass={ass}"]
+    if cfg.vertical_mode == "crop":
+        chain = "[0:v]scale=-2:1920,crop=1080:1920[v]"
+    else:
+        chain = ("[0:v]split[a][b];[a]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=25:5[bg];"
+                 "[b]scale=1080:-2[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2[v]")
+    if ass:
+        chain += f";[v]ass={ass}[vo]"
+        return ["-filter_complex", chain, "-map", "[vo]", "-map", "0:a?"]
+    return ["-filter_complex", chain, "-map", "[v]", "-map", "0:a?"]
+
+
+def cut_draft(segs: list[Segment], a: float, b: float, out: Path) -> tuple[list[Segment], float] | None:
+    """FAST draft: join the buffered segments covering [a,b] with stream copy (no re-encode, ~instant, lossless).
+    The draft starts/ends on segment boundaries, so it is a few seconds wider than asked; trim it in the review page.
+    Returns (segments used, wall-clock start of the draft) or None if the buffer does not cover the window."""
+    sel = sorted((s for s in segs if s.path.exists() and s.t1 > a and s.t0 < b), key=lambda s: s.t0)
+    if not sel:
+        log.warning("nothing in buffer for that window")
+        return None
+    covered = sum(min(s.t1, b) - max(s.t0, a) for s in sel)
+    if covered < 0.5 * (b - a):
+        log.warning("buffer covers only %.0fs of %.0fs wanted; skipping", covered, b - a)
+        return None
+    listing = out.with_suffix(".txt")
+    listing.write_text("".join("file '{}'\n".format(s.path.resolve().as_posix().replace("'", "'\\''")) for s in sel))
+    cmd = [ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(listing),
+           "-c", "copy", "-movflags", "+faststart", str(out)]
+    try:
+        r = _run(cmd)
+    finally:
+        listing.unlink(missing_ok=True)
+    if r.returncode != 0 or not out.exists():
+        log.error("draft cut failed: %s", r.stderr.strip()[-400:])
+        out.unlink(missing_ok=True)
+        return None
+    return sel, sel[0].t0
+
+
+def draft_offset(sel: list[Segment], wall: float) -> float:
+    """Wall-clock time -> seconds into the draft file (correct even if ad breaks left gaps between segments)."""
+    acc = 0.0
+    for s in sel:
+        if wall < s.t0:
+            return acc
+        if wall <= s.t1:
+            return acc + (wall - s.t0)
+        acc += s.t1 - s.t0
+    return acc
+
+
+def probe_duration(path: Path) -> float | None:
+    r = _run([ffprobe_exe(), "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(path)], 30)
+    try:
+        return float(r.stdout.strip())
+    except ValueError:
+        return None
+
+
+def export_clip(src: Path, out: Path, start: float, end: float, cfg: Config, vertical: bool = False,
+                ass_text: str | None = None) -> bool:
+    """FINAL clip: ONE precise encode that does trim + optional 9:16 + optional burned captions together.
+    ffmpeg runs inside the output folder with bare file names so Windows drive letters ('C:') never break the ass filter."""
+    out.parent.mkdir(parents=True, exist_ok=True)
+    ass_name = None
+    if ass_text:
+        ass_name = out.with_suffix(".ass").name
+        (out.parent / ass_name).write_text(ass_text, encoding="utf-8")
+    cmd = [ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error", "-ss", f"{max(start, 0):.3f}", "-i", str(src.resolve()),
+           "-t", f"{max(end - start, 0.5):.3f}", *_filters(cfg, vertical, ass_name), *_vcodec(cfg),
+           "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", out.name]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=900, errors="replace", cwd=out.parent)
+    finally:
+        if ass_name:
+            (out.parent / ass_name).unlink(missing_ok=True)
+    if r.returncode != 0 or not out.exists():
+        log.error("export failed: %s", r.stderr.strip()[-500:])
         out.unlink(missing_ok=True)
         return False
     return True

@@ -15,7 +15,7 @@ from typing import Callable
 
 from .chat import TwitchChat, YouTubeChat
 from .config import Config
-from .cutter import cut_clip, loudness_jump, make_vertical
+from .cutter import cut_clip, cut_draft, draft_offset, export_clip, loudness_jump, probe_duration
 from .detector import ChatEvent, Spike, SpikeDetector
 from .recorder import Recorder
 
@@ -41,7 +41,8 @@ def _dir_gb(p: Path) -> float:
 
 class ChannelWorker(threading.Thread):
     def __init__(self, cfg: Config, target: str, out_root: Path, stop: threading.Event,
-                 source_cmd: list[str] | None = None, chat_factory: Callable[[Callable], threading.Thread] | None = None):
+                 source_cmd: list[str] | None = None, chat_factory: Callable[[Callable], threading.Thread] | None = None,
+                 pool: ThreadPoolExecutor | None = None):
         platform, label, url = parse_target(target)
         super().__init__(daemon=True, name=f"worker-{label}")
         self.cfg, self.platform, self.label, self.url, self.stop_evt = cfg, platform, label, url, stop
@@ -56,7 +57,9 @@ class ChannelWorker(threading.Thread):
             self.chat = TwitchChat(label, self.events.put, stop)
         else:
             self.chat = YouTubeChat(url, self.events.put, stop)
-        self.pool = ThreadPoolExecutor(max_workers=cfg.cut_workers, thread_name_prefix=f"cut-{label}")
+        self.own_pool = pool is None          # one shared pool across streams keeps total CPU use bounded
+        self.pool = pool or ThreadPoolExecutor(max_workers=cfg.cut_workers, thread_name_prefix=f"cut-{label}")
+        self.recent: list[tuple[float, float]] = []
         self.pending: list[tuple[float, float, float, Spike]] = []   # (cut_at, a, b, spike)
         self.clips_made = 0
         self.root = out_root
@@ -86,7 +89,8 @@ class ChannelWorker(threading.Thread):
                          "live" if self.recorder.live.is_set() else "waiting", self.clips_made)
         if self.pending:
             log.info("[%s] %d spike(s) still waiting for video at shutdown were dropped", self.label, len(self.pending))
-        self.pool.shutdown(wait=True)
+        if self.own_pool:
+            self.pool.shutdown(wait=True)
         self.recorder.join(timeout=20)      # make sure ffmpeg/streamlink are really stopped and the buffer is deleted
 
     def _schedule(self, sp: Spike):
@@ -99,34 +103,63 @@ class ChannelWorker(threading.Thread):
         self.pending.append((b + c.segment_s * 1.5 + 2, a, b, sp))
 
     # ---- cutting -----------------------------------------------------------------------------
+    def _duplicate(self, a: float, b: float) -> bool:
+        for a2, b2 in self.recent:
+            if (min(b, b2) - max(a, a2)) / max(min(b - a, b2 - a2), 1) >= self.cfg.dup_overlap:
+                return True
+        return False
+
     def _cut(self, a: float, b: float, sp: Spike):
+        c = self.cfg
         try:
-            if _dir_gb(self.root) > self.cfg.max_clips_gb:
-                log.warning("[%s] clips folder over %.0f GB; not cutting (raise max_clips_gb or purge)", self.label, self.cfg.max_clips_gb)
+            if _dir_gb(self.root) > c.max_clips_gb:
+                log.warning("[%s] clips folder over %.0f GB; not cutting (raise max_clips_gb or purge)", self.label, c.max_clips_gb)
+                return
+            if self._duplicate(a, b):
+                log.info("[%s] skipped a clip that mostly repeats the previous one", self.label)
                 return
             self.out_dir.mkdir(parents=True, exist_ok=True)
-            stamp = datetime.fromtimestamp(sp.start).strftime("%H%M%S")
-            cid = f"clip_{stamp}"
+            cid = "clip_" + datetime.fromtimestamp(sp.onset).strftime("%H%M%S")
             out = self.out_dir / f"{cid}.mp4"
-            if not cut_clip(self.recorder.segments_between(a, b), a, b, out, self.cfg):
-                return
-            score, jump = sp.score, loudness_jump(out, self.cfg.pre_s * 0.8)
+            segs = self.recorder.segments_between(a, b)
+            # suggested trim (wall-clock): from just before the moment to shortly after the reaction, capped for short-form
+            sa = sp.onset - c.reaction_lag_s - 2
+            sb = max(min(sp.end + 6, sa + c.suggest_max_s), sp.peak_t + 8)
+            if c.cut_mode == "encode":
+                if not cut_clip(segs, a, b, out, c):
+                    return
+                d0, sel = max(a, segs[0].t0), None
+                sug = (max(sa - d0, 0.0), sb - d0)
+                moment = sp.onset - d0
+            else:
+                res = cut_draft(segs, a, b, out)
+                if not res:
+                    return
+                sel, d0 = res
+                sug = (draft_offset(sel, sa), draft_offset(sel, sb))
+                moment = draft_offset(sel, sp.onset)
+            dur = probe_duration(out) or (b - a)
+            sug = (round(min(sug[0], dur - 1), 1), round(min(max(sug[1], sug[0] + 3), dur), 1))
+            score, jump = sp.score, loudness_jump(out, max(moment - c.reaction_lag_s, 1.0))
             if jump is not None and jump > 3:
                 score = min(100.0, round(score + min(jump, 10), 1))          # louder after the moment = real reaction
             meta = {"id": f"{self.label}/{self.session}/{cid}", "file": out.name, "channel": self.label,
                     "platform": self.platform, "source_url": self.url, "status": "new", "score": score,
                     "chat_score": sp.score, "loudness_jump_db": jump,
-                    "created": datetime.fromtimestamp(a).isoformat(timespec="seconds"),
-                    "duration_s": round(b - a, 1), "spike": {k: v for k, v in asdict(sp).items() if k != "score"},
-                    "vertical": None}
-            if self.cfg.vertical == "auto":
-                v = out.with_name(cid + "_vertical.mp4")
-                if make_vertical(out, v, self.cfg):
-                    meta["vertical"] = v.name
+                    "created": datetime.fromtimestamp(d0).isoformat(timespec="seconds"),
+                    "duration_s": round(dur, 1), "moment_s": round(moment, 1),
+                    "suggest_start_s": sug[0], "suggest_end_s": sug[1], "exports": [],
+                    "spike": {k: v for k, v in asdict(sp).items() if k != "score"}}
             tmp = out.with_suffix(".json.tmp")
             tmp.write_text(json.dumps(meta, indent=1, ensure_ascii=False), encoding="utf-8")
             tmp.replace(out.with_suffix(".clip.json"))
+            self.recent.append((a, b))
             self.clips_made += 1
-            log.info("[%s] saved %s (score %.0f)", self.label, out, score)
+            log.info("[%s] saved %s  draft %.0fs, suggested trim %.0f-%.0fs, score %.0f", self.label, out.name, dur, sug[0], sug[1], score)
+            if c.vertical == "auto":                                        # one encode of the suggested trim, vertical
+                fin = out.with_name(f"{cid}_vertical.mp4")
+                if export_clip(out, fin, sug[0], sug[1], c, vertical=True):
+                    meta["exports"].append({"file": fin.name, "start": sug[0], "end": sug[1], "vertical": True, "captions": False})
+                    out.with_suffix(".clip.json").write_text(json.dumps(meta, indent=1, ensure_ascii=False), encoding="utf-8")
         except Exception:
             log.exception("[%s] cut failed", self.label)

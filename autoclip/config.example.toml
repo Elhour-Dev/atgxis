@@ -6,14 +6,20 @@ mult = 2.5          # higher = fewer, bigger clips (try 3.5 for busy channels)
 min_users = 6       # at least this many DIFFERENT chatters in the window (raise to 12+ for big channels)
 warmup_s = 90       # time spent learning the channel's normal chat level before clipping
 
-# --- how long are clips? ---
-pre_s = 30          # chat reacts late: start this many seconds before the spike
-post_s = 12
+# --- drafts and suggested trim ---
+cut_mode = "copy"       # "copy" = instant draft (recommended). "encode" = exact window but ~15 s of CPU per clip
+pre_s = 40              # draft context before the spike (free in copy mode)
+post_s = 15
+reaction_lag_s = 8      # chat reacts ~8 s after the moment; raise it if suggested trims start too late
+suggest_max_s = 45      # suggested trim never longer than this
+
+# --- captions ---
+# whisper_model = "small"   # tiny / base / small / medium
 
 # --- quality / speed ---
 quality = "720p60,720p,480p,best"   # lower quality = less disk; clipping does not re-encode the buffer
 encoder = "libx264"                 # "h264_nvenc" (NVIDIA), "h264_qsv" (Intel), "h264_amf" (AMD) = faster cuts
-vertical = "on_demand"              # "auto" makes a 9:16 copy of every clip, "off" never
+vertical = "on_demand"              # "auto" also exports a 9:16 of every suggested trim (uses CPU/GPU)
 
 # --- housekeeping ---
 out_dir = "clips"

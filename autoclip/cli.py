@@ -9,6 +9,7 @@ import sys
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from . import config as cfgmod
@@ -40,6 +41,9 @@ def cmd_doctor(_args) -> int:
         enc = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"], capture_output=True, text=True).stdout
         hw = [e for e in ("h264_nvenc", "h264_qsv", "h264_amf") if e in enc]
         print("hardware encoders:", ", ".join(hw) or "none found (CPU encoding is fine)")
+        filt = subprocess.run(["ffmpeg", "-hide_banner", "-filters"], capture_output=True, text=True).stdout
+        print("captions (libass):", "OK" if " ass " in filt else "MISSING - install the full FFmpeg build (winget Gyan.FFmpeg has it)")
+    print("faster-whisper:", "OK" if importlib.util.find_spec("faster_whisper") else "not installed (only for captions): pip install faster-whisper")
     print("\nAll required tools found." if ok else "\nFix the MISSING items above, then run doctor again.")
     return 0 if ok else 1
 
@@ -49,7 +53,8 @@ def cmd_run(args) -> int:
     if args.out:
         cfg.out_dir = args.out
     stop = threading.Event()
-    workers = [ChannelWorker(cfg, t, Path(cfg.out_dir), stop) for t in args.targets]
+    pool = ThreadPoolExecutor(max_workers=cfg.cut_workers, thread_name_prefix="cut")
+    workers = [ChannelWorker(cfg, t, Path(cfg.out_dir), stop, pool=pool) for t in args.targets]
     for w in workers:
         w.start()
         time.sleep(1)
@@ -62,6 +67,7 @@ def cmd_run(args) -> int:
         stop.set()
         for w in workers:
             w.join(timeout=120)
+    pool.shutdown(wait=True)
     return 0
 
 

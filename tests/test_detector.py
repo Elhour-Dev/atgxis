@@ -125,3 +125,10 @@ def test_late_messages_are_counted_not_crashing():
 def test_very_long_spike_is_split():
     spikes, _ = run(Config(), burst(150, 280), 400)
     assert len(spikes) >= 2
+
+
+def test_onset_is_much_tighter_than_window_start():
+    spikes, _ = run(Config(), burst(200, 215), 400)
+    sp = spikes[0]
+    assert abs(sp.onset - (T0 + 200)) <= 1            # pinpoints when chat took off
+    assert sp.onset > sp.start + 5                     # the old window-start guess was ~9s too early

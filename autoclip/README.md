@@ -30,8 +30,11 @@ python -m autoclip review                                   # later: opens the r
 ```
 * The first **90 s** of each run is spent learning the channel's normal chat level; nothing is clipped yet.
 * Leave it running during the stream. **Ctrl+C** stops it cleanly (clips in progress are finished).
-* Clips land in `clips\<channel>\<date_time>\`. The review page ranks them best-first; **Keep / Trash / Make vertical 9:16**,
-  and "Delete trashed files" frees disk. Nothing is deleted until you press that.
+* Clips land in `clips\<channel>\<date_time>\` as **drafts**: ~40 s of context around the moment, made by stream copy in
+  under a second (no CPU use, no quality loss). Nothing is encoded until you ask.
+* In the review page (ranked best-first) each draft opens already trimmed to a **suggested 10-45 s window**. Fine-tune with the
+  *start = player* / *end = player* buttons (the player loops your trim), tick **Vertical 9:16** and/or **Captions**, and press
+  **Export clip**: ONE encode does the exact trim + layout + captions. Then **Keep / Trash**; "Delete trashed files" frees disk.
 
 ## How it avoids the usual problems
 
@@ -46,13 +49,21 @@ python -m autoclip review                                   # later: opens the r
 | Video and chat drift apart (ads, drops, reconnects) | Every video segment and chat message is stamped with **wall-clock** time, never stream-relative time. |
 | Stream drops / goes offline | Recorder reconnects with back-off and polls politely while offline; chat readers reconnect forever. |
 | Disk fills up | Rolling 10-minute buffer is auto-pruned (stream copy, no re-encode); stops cutting past `max_clips_gb`. |
-| CPU load on a gaming PC | The buffer is **never re-encoded**; only the ~40 s clip is encoded, 2 at a time. Optional GPU encoder. Vertical copies only on demand. |
+| CPU load on a gaming PC | Buffer and drafts are **never re-encoded** (a 48 s draft takes 0.2 s vs 16 s to encode: 70x faster). Only clips you export are encoded, one pass, bounded across all streams. Optional GPU encoder. |
+| Clips start too early / too late | Finds the second chat actually took off (not the window start: ~9 s tighter), then suggests a short trim; you fine-tune in the player. |
+| Same moment clipped twice | A new clip overlapping an existing one by 60%+ is skipped. |
 | Windows quirks | No shell tricks, list-style subprocess args, paths with spaces/apostrophes tested, UTF-8 console so emotes cannot crash it. |
 | Orphaned ffmpeg processes | Shutdown is verified by tests: no leftover processes, buffer folder removed. |
 | Review page safety | Listens on `127.0.0.1` only, serves only `.mp4` inside the clips folder, rejects other websites' requests. |
 
 Loudness bonus: a clip scores up to +10 if the audio is louder after the moment than before it
 (streamer/game reacting), which filters chat-only false alarms.
+
+## Captions (optional, one-time setup)
+`pip install faster-whisper`, then tick **Captions** when exporting. First use downloads the speech model (~500 MB for `small`);
+a GPU is used automatically if available. Style: big bold uppercase, 1-3 words at a time, current word highlighted in yellow.
+If nobody speaks in the clip you get a clear message instead of an empty caption track. Set `whisper_model = "base"` for speed
+or `"medium"` for accuracy.
 
 ## Tuning
 See `config.example.toml`. Too many clips -> raise `mult` and `min_users`. Missing moments -> lower them.

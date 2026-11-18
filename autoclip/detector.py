@@ -26,6 +26,7 @@ class ChatEvent:
 class Spike:
     start: float
     end: float
+    onset: float        # best estimate of the second chat really took off (tighter than `start`)
     peak_t: float
     peak: int           # most unique chatters seen in one window
     baseline: float
@@ -49,6 +50,7 @@ class _Bucket:
 class _Acc:
     def __init__(self, start: float, baseline: float):
         self.start = start
+        self.onset = start
         self.end = start
         self.baseline = baseline
         self.peak = 0
@@ -172,6 +174,7 @@ class SpikeDetector:
                 for i in range(s - c.window_s + 1, s + 1):
                     self.cur.add(self.buckets.get(i))
                 self.cur.peak, self.cur.peak_t, self.cur.end = value, s, s
+                self.cur.onset = self._onset(s)
                 self.state, self.low_run = "active", 0
             else:
                 # only learn "normal" from quiet times, never from raids or spikes
@@ -210,10 +213,16 @@ class SpikeDetector:
             del self.buckets[k]
         return result
 
+    def _onset(self, s: int) -> int:
+        """First second of the trigger window where chat really took off (>=25% of the window's busiest second)."""
+        counts = [(i, len(b.users) if (b := self.buckets.get(i)) else 0) for i in range(s - self.cfg.window_s + 1, s + 1)]
+        top = max(c for _, c in counts)
+        return next((i for i, c in counts if c >= max(2, 0.25 * top)), s - self.cfg.window_s + 1)
+
     def _finish(self, end: float) -> Spike:
         cur = self.cur
         hype_frac = cur.hype / cur.n if cur.n else 0.0
-        sp = Spike(start=cur.start, end=max(end, cur.start + 1), peak_t=cur.peak_t, peak=cur.peak,
+        sp = Spike(start=cur.start, end=max(end, cur.start + 1), onset=cur.onset, peak_t=cur.peak_t, peak=cur.peak,
                    baseline=cur.baseline, msgs=cur.n, users=len(cur.users), hype_frac=round(hype_frac, 3),
                    top=cur.texts.most_common(8))
         sp.score = score_spike(sp.peak, sp.baseline, sp.hype_frac)
