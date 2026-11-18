@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 import re
 import shutil
 import subprocess
@@ -174,31 +175,68 @@ def probe_duration(path: Path) -> float | None:
         return None
 
 
+def _forget(p: Path) -> None:
+    """Delete a leftover file; never raise (on Windows a file that is open elsewhere cannot be deleted)."""
+    try:
+        p.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _place(tmp: Path, final: Path) -> Path:
+    """Move a finished temp file onto its final name and return where it really ended up.
+    Windows cannot replace a file that is open in another program (the browser playing the previous export, an antivirus scan,
+    Explorer's preview: WinError 32). Retry briefly, then fall back to a numbered name, so an export is never lost."""
+    for _ in range(6):
+        try:
+            os.replace(tmp, final)
+            return final
+        except PermissionError:
+            time.sleep(0.5)
+    for n in range(2, 60):
+        alt = final.with_name(f"{final.stem}_{n}{final.suffix}")
+        try:
+            os.replace(tmp, alt)
+            log.info("%s is in use by another program; saved as %s instead", final.name, alt.name)
+            return alt
+        except PermissionError:
+            continue
+    raise PermissionError(f"could not save {final.name}: it and every alternative name are in use by other programs")
+
+
 def export_clip(src: Path, out: Path, start: float, end: float, cfg: Config, vertical: bool = False,
                 ass_text: str | None = None, layout: dict | None = None, errors: list | None = None) -> bool:
     """FINAL clip: ONE precise encode that does trim + optional 9:16 layout + optional burned captions together.
     ffmpeg runs inside the output folder with bare file names so Windows drive letters ('C:') never break the ass filter."""
     out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_name(out.stem + ".part.mp4")           # encode here, then swap in: a half-written file never replaces a good one
+    _forget(tmp)
     ass_name = None
     if ass_text:
         ass_name = out.with_suffix(".ass").name
         (out.parent / ass_name).write_text(ass_text, encoding="utf-8")
     cmd = [ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error", "-ss", f"{max(start, 0):.3f}", "-i", str(src.resolve()),
            "-t", f"{max(end - start, 0.5):.3f}", *_filters(cfg, vertical, ass_name, layout), *_vcodec(cfg),
-           *_acodec(cfg), "-movflags", "+faststart", out.name]
+           *_acodec(cfg), "-movflags", "+faststart", tmp.name]
     cmd, kw = _low_priority(cmd, cfg)
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=900, errors="replace", cwd=out.parent, **kw)
     finally:
         if ass_name:
-            (out.parent / ass_name).unlink(missing_ok=True)
-    if r.returncode != 0 or not out.exists():
+            _forget(out.parent / ass_name)
+    if r.returncode != 0 or not tmp.exists():
         log.error("export failed: %s", r.stderr.strip()[-500:])
         if errors is not None:                       # lets the review page show WHY, e.g. "No such filter: 'ass'"
             errors.append(r.stderr.strip().splitlines()[-1][:300] if r.stderr.strip() else f"ffmpeg exit code {r.returncode}")
-        out.unlink(missing_ok=True)
+        _forget(tmp)
         return False
-    return True
+    try:
+        return _place(tmp, out)                      # the Path it was saved as (truthy); may carry a _2 suffix if `out` was locked
+    except PermissionError as e:
+        _forget(tmp)
+        if errors is not None:
+            errors.append(str(e))
+        return False
 
 
 def grab_frame(src: Path, t: float, layout_graph: str | None = None, width: int = 1280) -> bytes | None:

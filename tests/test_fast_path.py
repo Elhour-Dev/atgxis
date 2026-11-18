@@ -245,3 +245,52 @@ def test_server_ignores_browser_aborts_and_serves_ranges_correctly(tmp_path, cap
     srv.shutdown()
     out = capfd.readouterr()
     assert "Traceback" not in out.err and "10053" not in out.err and "Broken pipe" not in out.err
+
+
+def test_export_survives_a_locked_output_file(tmp_path, monkeypatch):
+    """Windows: the browser is playing the previous export, so the file name is locked (WinError 32). The export must still succeed."""
+    import os
+    from autoclip import cutter
+    src = tmp_path / "in.mp4"
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30", "-t", "3", "-c:v", "libx264", str(src)], check=True)
+    out = tmp_path / "clip_v.mp4"
+    out.write_bytes(b"old export that a browser has open")
+    real, locked = os.replace, {out}
+
+    def replace(a, b):
+        if Path(b) in locked:
+            raise PermissionError(32, "The process cannot access the file because it is being used by another process")
+        return real(a, b)
+    monkeypatch.setattr(cutter.os, "replace", replace)
+    monkeypatch.setattr(cutter.time, "sleep", lambda s: None)
+    placed = cutter.export_clip(src, out, 0, 2, Config(preset="ultrafast"))
+    assert placed == tmp_path / "clip_v_2.mp4" and placed.stat().st_size > 1000
+    assert out.read_bytes() == b"old export that a browser has open"            # the locked file is untouched
+    assert not list(tmp_path.glob("*.part.mp4"))                                  # no temp leftovers
+    locked.add(placed)                                                            # everything locked: a clear error, not a crash
+    errs = []
+    monkeypatch.setattr(cutter.os, "replace", lambda a, b: (_ for _ in ()).throw(PermissionError(32, "busy")))
+    assert cutter.export_clip(src, out, 0, 2, Config(preset="ultrafast"), errors=errs) is False
+    assert "could not save" in errs[0] and not list(tmp_path.glob("*.part.mp4"))
+
+
+@pytest.mark.skipif(not Path("/proc/self/fd").exists(), reason="needs /proc to list open files")
+def test_streaming_a_video_never_keeps_the_file_open(tmp_path):
+    """A browser that pauses mid-download used to keep the file open, which on Windows blocks replacing it (WinError 32)."""
+    import os
+    import socket
+    from autoclip import review
+    d = tmp_path / "ch" / "s"
+    d.mkdir(parents=True)
+    big = d / "big.mp4"
+    big.write_bytes(b"\0" * (24 * 1024 * 1024))
+    srv = review.QuietServer(("127.0.0.1", 0), review.make_handler(review.Store(tmp_path, Config())))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    s = socket.create_connection(srv.server_address)
+    s.sendall(b"GET /files/ch/s/big.mp4 HTTP/1.1\r\nHost: x\r\n\r\n")
+    assert len(s.recv(2000)) > 0                                   # the download started; now the "browser" stops reading
+    time.sleep(0.5)                                                # the server thread is blocked writing into a full socket
+    open_files = [os.readlink(f"/proc/self/fd/{n}") for n in os.listdir("/proc/self/fd") if os.path.exists(f"/proc/self/fd/{n}")]
+    assert str(big.resolve()) not in open_files
+    s.close()
+    srv.shutdown()

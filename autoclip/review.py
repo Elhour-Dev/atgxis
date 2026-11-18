@@ -475,9 +475,12 @@ class Store:
                             box=(layout or {}).get("captions"))
         name = f"{src.stem}_{int(start * 10)}-{int(end * 10)}{'_v' if vertical else ''}{'_cc' if captions else ''}.mp4"
         errs: list[str] = []
-        if not export_clip(src, p.parent / name, start, end, self.cfg, vertical, ass, layout, errs):
-            raise RuntimeError("ffmpeg failed: " + (errs[0] if errs else "see the console running `review`"))
-        copy = self.copy_to_export_dir(p.parent / name, m["channel"])
+        placed = export_clip(src, p.parent / name, start, end, self.cfg, vertical, ass, layout, errs)
+        if not placed:
+            why = errs[0] if errs else "see the console running `review`"
+            raise RuntimeError(("" if why.startswith("could not save") else "ffmpeg failed: ") + why)
+        name = placed.name                                   # may differ from the plan if Windows had the old file locked
+        copy = self.copy_to_export_dir(placed, m["channel"])
         with self.lock:
             p, m = self.find(cid)
             m.setdefault("exports", [])
@@ -613,15 +616,16 @@ def make_handler(store: Store):
                 if partial:
                     self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
                 self.end_headers()
-                with open(f, "rb") as fh:
-                    fh.seek(start)
-                    left = end - start + 1
-                    while left > 0:
+                pos, left = start, end - start + 1
+                while left > 0:                             # open per chunk: a slow browser must not keep the file locked (WinError 32)
+                    with open(f, "rb") as fh:
+                        fh.seek(pos)
                         chunk = fh.read(min(262144, left))
-                        if not chunk:
-                            break
-                        self.wfile.write(chunk)
-                        left -= len(chunk)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    pos += len(chunk)
+                    left -= len(chunk)
             except ConnectionError:
                 pass
 
