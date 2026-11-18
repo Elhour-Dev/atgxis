@@ -2,7 +2,7 @@
 # Only list what you want to change; everything else keeps its default.
 
 # --- how sensitive? ---
-mult = 2.5          # higher = fewer, bigger clips (try 3.5 for busy channels)
+mult = 2.0          # lower = more clips, higher = fewer/bigger (1.7 = very sensitive)
 min_users = 6       # at least this many DIFFERENT chatters in the window (raise to 12+ for big channels)
 warmup_s = 90       # time spent learning the channel's normal chat level before clipping
 
@@ -32,3 +32,10 @@ max_clips_gb = 20
 # hashtags = ["fyp", "viral", "streamer", "twitch", "clips"]
 # credit_line = true                       # "Clip from <streamer>: <link>" in the description
 # display_names = { kaicenat = "Kai Cenat" }
+
+# --- extra signals ---
+# audio_assist = true        # loud moments make chat spikes easier to catch (never fires alone)
+# audio_boost_db = 8.0
+# auto_mult = true           # multiplier eases to 1.8 on big chats
+# --- finished clips also copied here (or set it in the review page: Folders) ---
+# export_dir = "D:/Clips"

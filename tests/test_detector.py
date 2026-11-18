@@ -1,4 +1,7 @@
 import random
+import re
+
+import pytest
 
 from autoclip.config import Config
 from autoclip.detector import ChatEvent, SpikeDetector
@@ -132,3 +135,81 @@ def test_onset_is_much_tighter_than_window_start():
     sp = spikes[0]
     assert abs(sp.onset - (T0 + 200)) <= 1            # pinpoints when chat took off
     assert sp.onset > sp.start + 5                     # the old window-start guess was ~9s too early
+
+
+# ---- audio assist, adaptive multiplier, near-miss reporting ----
+def run_with_audio(cfg, chat_fn, audio_fn, seconds, seed=3):
+    d, rnd, spikes = SpikeDetector(cfg), random.Random(seed), []
+    d.advance(T0)
+    for s in range(seconds):
+        for user, text in chat_fn(s, rnd):
+            d.add(ChatEvent(t=T0 + s + 0.5, user=user, text=text))
+        if s % 4 == 0:                                   # one volume reading per 4 s video segment
+            d.add(ChatEvent(t=T0 + s, kind="audio", db=audio_fn(s)))
+        spikes += d.advance(T0 + s + 1)
+    return spikes, d
+
+
+def steady(level):
+    """level distinct chatters per second, 5 messages each second."""
+    def f(s, rnd):
+        return [(f"v{rnd.randint(1, 100000)}", "hi") for _ in range(level)]
+    return f
+
+
+def rising(base, lo, hi, factor):
+    def f(s, rnd):
+        n = int(base * (factor if lo <= s < hi else 1))
+        return [(f"v{rnd.randint(1, 100000)}", "hi") for _ in range(n)]
+    return f
+
+
+def test_loud_moment_lets_a_moderate_chat_rise_through():
+    cfg = Config(min_users=5)
+    chat = rising(10, 300, 315, 1.55)                           # chat only 1.55x normal: below the normal 2.0x bar
+    quiet_audio = lambda s: -30.0
+    loud_audio = lambda s: -16.0 if 296 <= s < 320 else -30.0   # streamer screams: +14 dB
+    assert run_with_audio(cfg, chat, quiet_audio, 400)[0] == []
+    spikes, _ = run_with_audio(cfg, chat, loud_audio, 400)
+    assert len(spikes) == 1 and spikes[0].audio_db >= 8
+    assert run_with_audio(Config(min_users=5, audio_assist=False), chat, loud_audio, 400)[0] == []   # switch really turns it off
+
+
+def test_loud_audio_alone_never_makes_a_clip():
+    loud_audio = lambda s: -10.0 if 296 <= s < 320 else -30.0
+    spikes, _ = run_with_audio(Config(min_users=5), steady(10), loud_audio, 400)      # chat completely flat
+    assert spikes == []
+    spikes, _ = run_with_audio(Config(min_users=5), rising(10, 300, 315, 1.1), loud_audio, 400)    # barely above normal: still no
+    assert spikes == []
+
+
+def test_digital_silence_and_missing_audio_are_harmless():
+    spikes, d = run_with_audio(Config(min_users=5), rising(10, 300, 315, 3), lambda s: -91.0, 400)
+    assert len(spikes) == 1 and spikes[0].audio_db == 0                              # chat spike still works with a muted stream
+
+
+def test_multiplier_eases_down_on_big_chats_but_never_below_1_8():
+    d = SpikeDetector(Config())
+    assert d._threshold(20) / 20 == pytest.approx(2.0)                                                  # small chat: full 2.0x
+    assert d._threshold(800) / 800 == pytest.approx(1.8, abs=0.01)                                      # big chat: 1.8x
+    assert SpikeDetector(Config(auto_mult=False))._threshold(800) / 800 == pytest.approx(2.0)           # can be turned off
+
+
+def test_near_miss_is_reported_once_per_episode():
+    cfg = Config(min_users=5)
+    spikes, d = run_with_audio(cfg, rising(10, 300, 315, 1.7), lambda s: -30.0, 400)   # 1.7x: close to the 2.0x bar, not over
+    notes = d.pop_notes()
+    assert spikes == [] and len(notes) == 1 and "near-miss" in notes[0] and re.search(r"needed 1\.[89]x", notes[0]), notes
+    assert d.pop_notes() == []                                                         # popped
+
+
+def test_audio_meter_measures_real_segments(tmp_path):
+    import subprocess
+    from autoclip.audio import mean_volume
+    def tone(name, vol):
+        p = tmp_path / name
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", f"sine=frequency=400:duration=2,volume={vol}", "-c:a", "aac", str(p)], check=True)
+        return mean_volume(p)
+    quiet, loud = tone("q.m4a", 0.03), tone("l.m4a", 0.6)
+    assert quiet is not None and loud is not None and loud - quiet > 20
+    assert mean_volume(tmp_path / "missing.ts") is None

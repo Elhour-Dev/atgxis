@@ -11,8 +11,9 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from .config import Config
-from .captions import CaptionsUnavailable, build_ass, transcribe
+from .captions import CaptionsUnavailable, build_ass, transcribe, words_in_window
 from . import layout as lay
+from . import settings, share
 from .cutter import export_clip, grab_frame
 from .describe import suggest as suggest_description
 from .facecam import FacecamUnavailable, detect_facecam
@@ -47,23 +48,24 @@ video.vert{max-height:360px;width:auto;align-self:flex-start}
 .pvimg{position:absolute;inset:0;width:100%;height:100%;object-fit:fill;visibility:hidden}
 .capbox{position:absolute;border:2px dashed #22c55e;background:#22c55e22;display:flex;align-items:center;justify-content:center;color:#fff;font:800 14px Arial,sans-serif;text-align:center;cursor:move;touch-action:none;overflow:hidden;box-sizing:border-box;text-shadow:0 0 4px #000,0 0 4px #000}
 .caph{position:absolute;right:0;bottom:0;width:14px;height:14px;background:#22c55e;cursor:nwse-resize}
+pre.share{white-space:pre-wrap;font:12px/1.4 system-ui;background:#8881;border-radius:6px;padding:6px;margin:4px 0;max-height:120px;overflow:auto}
 details{background:#8881;border-radius:8px;padding:6px 8px}summary{cursor:pointer;font-size:14px}
 details input[type=text],details textarea{width:100%;box-sizing:border-box;font:inherit;padding:6px;border-radius:6px;border:1px solid #8884;background:var(--bg);color:var(--fg);margin-top:6px}
 </style>
 <header><h1>Clip review</h1>
 <select id=f><option value=new>To review</option><option value=keep>Kept</option><option value=trash>Trash</option><option value=all>All</option></select>
 <select id=s><option value=score>Best score first</option><option value=created>Newest first</option></select>
-<button id=purge>Delete trashed files</button><span class=mut id=count></span></header>
+<button id=folders>📁 Folders</button><button id=purge>Delete trashed files</button><span class=mut id=count></span></header>
 <div class=grid id=g></div>
 <script>
-let clips=[],sig='';const trims=new Map();const g=document.getElementById('g');
+let clips=[],sig='',shareInfo={providers:[],platforms:{}};const openPost=new Map(),openShare=new Map(),NL=String.fromCharCode(10);const trims=new Map();const g=document.getElementById('g');
 const enc=id=>id.split('/').map(encodeURIComponent).join('/');
 const fmt=t=>Math.floor(t/60)+':'+String(Math.floor(t%60)).padStart(2,'0');
 const fileUrl=(c,f)=>'/files/'+enc(c.dir)+'/'+encodeURIComponent(f);
 function el(t,c,x){const e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e}
 async function load(force){
   const next=await (await fetch('/api/clips')).json();
-  const ns=JSON.stringify(next.map(c=>[c.id,c.status,(c.exports||[]).length]));
+  const ns=JSON.stringify(next.map(c=>[c.id,c.status,(c.exports||[]).length,c.shares||null]));
   const playing=[...document.querySelectorAll('video')].some(v=>!v.paused);
   clips=next;if(ns!==sig&&(force||!playing)){sig=ns;render()}}
 function numInput(v,on){const i=el('input');i.type='number';i.step='0.1';i.min='0';i.value=v;i.oninput=()=>on(parseFloat(i.value));return i}
@@ -86,24 +88,57 @@ function render(){
     const sp=c.spike;card.append(el('div','mut',sp.peak+' chatters at once (normal '+Math.round(sp.baseline)+') · '+sp.msgs+' msgs'+(c.loudness_jump_db!=null?' · audio '+(c.loudness_jump_db>0?'+':'')+c.loudness_jump_db+' dB':'')));
     if(sp.top&&sp.top.length)card.append(el('div','chat',sp.top.map(x=>x[0]+' ×'+x[1]).join('   ')));
     const tr=el('div','trim'),len=el('span','mut'),upd=()=>{len.textContent='= '+Math.max(t.end-t.start,0).toFixed(1)+' s'};
-    const a=numInput(t.start,x=>{t.start=x;upd()}),b=numInput(t.end,x=>{t.end=x;upd()});
+    const a=numInput(t.start,x=>{t.start=x;upd()}),b=numInput(t.end,x=>{t.end=x;upd()}),a_=a,b_=b;
     const setA=el('button',null,'◀ start = player');setA.onclick=()=>{t.start=+v.currentTime.toFixed(1);a.value=t.start;upd()};
     const setB=el('button',null,'end = player ▶');setB.onclick=()=>{t.end=+v.currentTime.toFixed(1);b.value=t.end;upd()};
+    const shift=d=>{const L=c.duration_s,n=t.end-t.start;let a=Math.min(Math.max(t.start+d,0),Math.max(L-n,0));t.start=+a.toFixed(1);t.end=+(a+n).toFixed(1);a_.value=t.start;b_.value=t.end;v.currentTime=t.start};
+    const left=el('button',null,'◀ 5 s');left.title='Slide the whole window 5 s earlier';left.onclick=()=>shift(-5);
+    const right=el('button',null,'5 s ▶');right.title='Slide the whole window 5 s later';right.onclick=()=>shift(5);
     const snap=el('button',null,'30 s');snap.title='Make the clip exactly 30 s from the start point';snap.onclick=()=>{t.end=+Math.min(t.start+(c.clip_len_s||30),c.duration_s).toFixed(1);b.value=t.end;upd()};
-    const r1=el('div','row');r1.append(el('span','mut','Trim'),a,setA,b,setB,snap,len);upd();
+    const r1=el('div','row');r1.append(el('span','mut','Trim'),left,right,a,setA,b,setB,snap,len);upd();
     const r2=el('div','row');
     for(const [k,label] of [['vertical','Vertical 9:16'],['captions','Captions']]){const l=el('label'),cb=el('input');cb.type='checkbox';cb.checked=t[k];cb.onchange=()=>{t[k]=cb.checked};l.append(cb,label);r2.append(l)}
     const ex=el('button','primary','Export clip');ex.onclick=async()=>{ex.disabled=true;ex.textContent='Encoding…';const ok=await post('/api/export',{id:c.id,start:t.start,end:t.end,vertical:t.vertical,captions:t.captions});ex.disabled=false;ex.textContent='Export clip';if(ok)load(true)};
     r2.append(ex);tr.append(r1,r2);card.append(tr);
-    if((c.exports||[]).length){const e=el('div','row');e.append(el('span','mut','Exports:'));for(const x of c.exports){const l=el('a',null,(x.vertical?'9:16 ':'')+(x.captions?'CC ':'')+fmt(x.start)+'-'+fmt(x.end));l.href=fileUrl(c,x.file);l.target='_blank';e.append(l)}card.append(e)}
-    {const d=c.description||{title:'',body:'',alts:[]},det=el('details');det.append(el('summary',null,'Post text: title + description ('+(d.category||'')+')'));
-      const ti=el('input');ti.type='text';ti.value=d.title||'';const ta=el('textarea');ta.rows=4;ta.value=d.body||'';
+    if((c.exports||[]).length){const e=el('div','row');e.append(el('span','mut','Exports:'));for(const x of c.exports){const l=el('a',null,(x.vertical?'9:16 ':'')+(x.captions?'CC ':'')+fmt(x.start)+'-'+fmt(x.end));l.href=fileUrl(c,x.file);l.target='_blank';
+      const sf=el('button',null,'📂');sf.title='Show this file in its folder'+(x.copy?' (a copy is also in your final clips folder)':'');sf.onclick=()=>post('/api/reveal',{id:c.id,file:x.file});e.append(l,sf)}card.append(e)}
+    let getText=()=>({title:'',body:''});
+    {const d=c.description||{title:'',body:'',alts:[]},det=el('details');det.open=!!openPost.get(c.id);det.ontoggle=()=>openPost.set(c.id,det.open);getText=()=>({title:ti.value,body:ta.value});det.append(el('summary',null,'Post text: title + description ('+(d.category||'')+')'));
+      var ti=el('input');ti.type='text';ti.value=d.title||'';var ta=el('textarea');ta.rows=4;ta.value=d.body||'';
       let timer;const save=()=>{clearTimeout(timer);timer=setTimeout(()=>post('/api/describe',{id:c.id,title:ti.value,body:ta.value}),600)};
       ti.oninput=save;ta.oninput=save;const alts=d.alts||[];let ai=Math.max(alts.indexOf(d.title),0);
       const other=el('button',null,'↻ Other title');other.onclick=()=>{if(!alts.length)return;ai=(ai+1)%alts.length;ti.value=alts[ai];save()};
       const cp=el('button',null,'Copy title + description');cp.onclick=async()=>{const t=ti.value+'\\n\\n'+ta.value;
         try{await navigator.clipboard.writeText(t)}catch(e){ta.select();document.execCommand('copy')}cp.textContent='Copied ✓';setTimeout(()=>cp.textContent='Copy title + description',1500)};
       const dr=el('div','row');dr.append(other,cp);det.append(ti,ta,dr);card.append(det)}
+    if((c.exports||[]).length){
+      const sd=el('details');sd.open=!!openShare.get(c.id);sd.ontoggle=()=>openShare.set(c.id,sd.open);sd.append(el('summary',null,'Share to TikTok / YouTube Shorts / Instagram Reels'));
+      const fsel=el('select');const exs=c.exports.slice().reverse();for(const x of exs){const o=el('option',null,x.file+(x.vertical?' (9:16)':' (not vertical)'));o.value=x.file;fsel.append(o)}
+      const vi=exs.findIndex(x=>x.vertical);if(vi>0)fsel.selectedIndex=vi;
+      const psel=el('select');for(const p of shareInfo.providers){const o=el('option',null,p.label+(p.configured?'':' (not set up)'));o.value=p.name;o.disabled=!p.configured;psel.append(o)}
+      const boxes={},row=el('div','row');
+      for(const [k,v] of Object.entries(shareInfo.platforms)){const l=el('label'),cb=el('input');cb.type='checkbox';cb.checked=true;boxes[k]=cb;l.append(cb,v.label);row.append(l)}
+      const fl=el('label'),force=el('input');force.type='checkbox';fl.append(force,'post again if already posted');
+      const st=el('div','mut');const stat=()=>{st.replaceChildren();for(const [k,v] of Object.entries(c.shares||{})){const line=el('div',null,(shareInfo.platforms[k]||{label:k}).label+': '+v.status+' '+(v.at||'').slice(11,16)+(v.message?' - '+v.message:''));
+        if(v.status==='opened'){const m=el('button',null,'Mark as posted');m.onclick=async()=>{await post('/api/share/mark',{id:c.id,platform:k,status:'done'});load(true)};line.append(' ',m)}
+        if(v.status==='done'){const m=el('button',null,'Reset');m.onclick=async()=>{await post('/api/share/mark',{id:c.id,platform:k,status:'reset'});load(true)};line.append(' ',m)}
+        st.append(line)}};stat();
+      const go=el('button','primary','Share selected…');
+      go.onclick=async()=>{
+        const chosen=Object.keys(boxes).filter(k=>boxes[k].checked);if(!chosen.length){alert('Tick at least one platform.');return}
+        const tx=getText(),texts={};for(const k of chosen)texts[k]={title:tx.title,body:tx.body};
+        const prov=shareInfo.providers.find(p=>p.name===psel.value)||{label:psel.value,automatic:false};
+        const names=chosen.map(k=>shareInfo.platforms[k].label).join(', ');
+        if(!confirm('Share this clip?'+NL+NL+'File: '+fsel.value+NL+'Title: '+tx.title+NL+'To: '+names+NL+'Method: '+prov.label+NL+NL+'Nothing is posted or opened until you press OK.'))return;
+        go.disabled=true;go.textContent='Working…';
+        const send=async plats=>{const r=await fetch('/api/share',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:c.id,file:fsel.value,platforms:plats,texts,provider:psel.value,force:force.checked})});
+          if(!r.ok){alert(await r.text());return null}return (await r.json()).results};
+        if(prov.automatic){const res=await send(chosen);if(res)alert(Object.entries(res).map(([k,v])=>shareInfo.platforms[k].label+': '+v.status+(v.message?' - '+v.message:'')).join(NL))}
+        else{for(const k of chosen){const res=await send([k]);if(!res)break;const r1=res[k];
+            try{await navigator.clipboard.writeText(r1.text)}catch(e){}
+            if(confirm(shareInfo.platforms[k].label+': page opened, file selected, caption copied to your clipboard.'+NL+NL+'Paste the caption, attach the video and press Post there.'+NL+'Press OK once it is posted (marks it done), or Cancel to leave it as "opened".'))await post('/api/share/mark',{id:c.id,platform:k,status:'done'})}}
+        go.disabled=false;go.textContent='Share selected…';load(true)};
+      sd.append(el('div','mut','Clip file:'),fsel,el('div','mut','Method:'),psel,row,fl,go,st);card.append(sd)}
     const lb=el('button',null,layouts[c.channel]?'Edit layout for '+c.channel+' ✓':'Set layout for '+c.channel+' (webcam + gameplay)');lb.onclick=()=>openLayout(c,v);card.append(lb);
     const vx=(c.exports||[]).filter(x=>x.vertical).slice(-1)[0];
     if(vx){const pvid=el('video','vert');pvid.controls=true;pvid.preload='metadata';pvid.src=fileUrl(c,vx.file);card.append(el('div','mut','Vertical preview (latest export):'),pvid)}
@@ -115,6 +150,20 @@ function render(){
 async function post(u,d){const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});if(!r.ok){alert(await r.text());return false}return true}
 
 let layouts={};
+async function loadShare(){try{shareInfo=await (await fetch('/api/share/providers')).json()}catch(e){}}
+function openFolders(){
+  fetch('/api/settings').then(r=>r.json()).then(S=>{
+    const ov=el('div','modal'),box=el('div','mbox');ov.append(box);box.append(el('h2',null,'Folders'));
+    const msg=el('div','hint');
+    const mk=(title,hint,val,what,key)=>{const w=el('div'),r=el('div','row'),inp=el('input');inp.type='text';inp.value=val||'';inp.style.cssText='flex:1;min-width:260px;padding:6px;border-radius:6px;border:1px solid #8884;background:var(--bg);color:var(--fg)';
+      const br=el('button',null,'Browse…');br.onclick=async()=>{br.disabled=true;const r2=await fetch('/api/browse',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({initial:inp.value})});br.disabled=false;const j=await r2.json();if(j.path)inp.value=j.path;else msg.textContent='No folder chosen (cancelled, or this PC has no folder dialog: paste the full path instead).'};
+      const op=el('button',null,'Open');op.onclick=()=>post('/api/reveal',{what});r.append(inp,br,op);w.append(el('b',null,title),el('div','hint',hint),r);return [w,inp]};
+    const [w1,i1]=mk('Final clips folder','Every finished (exported) clip is ALSO copied here, e.g. D:'+String.fromCharCode(92)+'Clips. Leave empty to keep them only with the drafts.',S.export_dir,'export','export_dir');
+    const [w2,i2]=mk('Drafts + working folder','Drafts, layouts and the review page live here. Changing it takes effect the next time you start the program.',S.out_dir,'out','out_dir');
+    const sv=el('button','primary','Save'),cl=el('button',null,'Close');
+    sv.onclick=async()=>{const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({export_dir:i1.value,out_dir:i2.value})});
+      msg.textContent=r.ok?(await r.json()).restart_needed?'Saved. Restart the clipper and this page to use the new drafts folder.':'Saved. New exports use it right away.':await r.text()};
+    cl.onclick=()=>ov.remove();const bar=el('div','row');bar.append(sv,cl);box.append(w1,w2,bar,msg,el('div','hint','Settings file: '+S.settings_file));document.body.append(ov)})}
 async function loadLayouts(){try{layouts=await (await fetch('/api/layouts')).json()}catch(e){}}
 const OUTW=1080,OUTH=1920,even=n=>Math.max(2,Math.round(n/2)*2);
 function openLayout(c,video){
@@ -199,7 +248,7 @@ function openLayout(c,video){
   sync();renderCap();loadFrame()}
 document.getElementById('f').onchange=()=>render();document.getElementById('s').onchange=()=>render();
 document.getElementById('purge').onclick=async()=>{if(confirm('Permanently delete every trashed clip file?')){await post('/api/purge',{});load(true)}};
-loadLayouts().then(()=>load(true));setInterval(()=>load(false),10000);
+document.getElementById('folders').onclick=openFolders;Promise.all([loadLayouts(),loadShare()]).then(()=>load(true));setInterval(()=>load(false),10000);
 </script>"""
 
 
@@ -259,6 +308,20 @@ class Store:
             _write_json(p, m)
             return True
 
+    def copy_to_export_dir(self, f: Path, channel: str) -> str | None:
+        """Also place the finished clip in the folder you chose for final clips (if any)."""
+        if not self.cfg.export_dir:
+            return None
+        try:
+            import shutil
+            dest = settings.validate_dir(self.cfg.export_dir) / re.sub(r"[^\w.-]", "_", channel)
+            dest.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(f, dest / f.name)
+            return str(dest / f.name)
+        except (OSError, ValueError) as e:
+            print(f"could not copy to the final clips folder: {e}")
+            return None
+
     def draft_path(self, cid: str) -> tuple[Path, dict]:
         p, m = self.find(cid)
         if not p:
@@ -299,18 +362,23 @@ class Store:
         ass = None
         if captions:
             words = transcribe(src, self.cfg)                      # may raise CaptionsUnavailable
-            if not words:
-                raise ValueError("no speech found in this clip, so there is nothing to caption")
+            inside = words_in_window(words, start, end)
+            if not inside:                                   # speech exists, but not inside the part being exported
+                lo, hi = min(w[1] for w in words), max(w[2] for w in words)
+                raise ValueError(f"nobody speaks between {start:.1f}s and {end:.1f}s. Speech in this clip is at {lo:.1f}-{hi:.1f}s: "
+                                 "move the trim over it, or export without captions.")
             ass = build_ass(words, start, end, vertical, self.cfg.caption_font, seam=(layout or {}).get("mode") == "split",
                             box=(layout or {}).get("captions"))
         name = f"{src.stem}_{int(start * 10)}-{int(end * 10)}{'_v' if vertical else ''}{'_cc' if captions else ''}.mp4"
-        if not export_clip(src, p.parent / name, start, end, self.cfg, vertical, ass, layout):
-            raise RuntimeError("ffmpeg failed; see the console running `review`")
+        errs: list[str] = []
+        if not export_clip(src, p.parent / name, start, end, self.cfg, vertical, ass, layout, errs):
+            raise RuntimeError("ffmpeg failed: " + (errs[0] if errs else "see the console running `review`"))
+        copy = self.copy_to_export_dir(p.parent / name, m["channel"])
         with self.lock:
             p, m = self.find(cid)
             m.setdefault("exports", [])
             m["exports"] = [e for e in m["exports"] if e["file"] != name] + [
-                {"file": name, "start": start, "end": end, "vertical": vertical, "captions": captions,
+                {"file": name, "start": start, "end": end, "vertical": vertical, "captions": captions, "copy": copy,
                  "layout": (layout or {}).get("mode", self.cfg.vertical_mode) if vertical else None}]
             _write_json(p, m)
         return name
@@ -359,6 +427,11 @@ def make_handler(store: Store):
                 return self._send(200, PAGE.encode(), "text/html; charset=utf-8")
             if path == "/api/clips":
                 return self._send(200, json.dumps(store.list()).encode())
+            if path == "/api/settings":
+                return self._send(200, json.dumps({"out_dir": str(store.root), "export_dir": store.cfg.export_dir,
+                                                   "settings_file": str(settings.path())}).encode())
+            if path == "/api/share/providers":
+                return self._send(200, json.dumps({"providers": share.providers_info(), "platforms": share.PLATFORMS}).encode())
             if path == "/api/layouts":
                 return self._send(200, json.dumps(LayoutStore(store.root).all()).encode())
             if path == "/api/frame":
@@ -454,6 +527,44 @@ def make_handler(store: Store):
                     return self._send(400, str(e).encode(), "text/plain")
                 except Exception as e:
                     return self._send(500, str(e).encode(), "text/plain")
+            elif path == "/api/settings":
+                try:
+                    changes = {}
+                    if body.get("export_dir") is not None:
+                        ed = str(body["export_dir"]).strip()
+                        changes["export_dir"] = str(settings.validate_dir(ed)) if ed else ""
+                        store.cfg.export_dir = changes["export_dir"]                  # takes effect immediately
+                    if body.get("out_dir"):
+                        changes["out_dir"] = str(settings.validate_dir(str(body["out_dir"])))
+                    settings.update(**changes)
+                    restart = "out_dir" in changes and Path(changes["out_dir"]) != store.root
+                    return self._send(200, json.dumps({**changes, "restart_needed": restart}).encode())
+                except ValueError as e:
+                    return self._send(400, str(e).encode(), "text/plain")
+            elif path == "/api/browse":
+                return self._send(200, json.dumps({"path": settings.pick_folder(str(body.get("initial", "")))}).encode())
+            elif path == "/api/reveal":
+                try:
+                    target = store.root if body.get("what") == "out" else (Path(store.cfg.export_dir) if body.get("what") == "export" and store.cfg.export_dir else None)
+                    if target is None:
+                        f, _ = store.draft_path(str(body["id"]))
+                        target = f.parent / Path(str(body["file"])).name
+                        if target.suffix.lower() != ".mp4" or not target.is_file():
+                            raise ValueError("file not found")
+                    settings.reveal(target)
+                    return self._send(200, b"{}")
+                except (ValueError, KeyError) as e:
+                    return self._send(400, str(e).encode(), "text/plain")
+            elif path == "/api/share":
+                try:
+                    res = share.run(store, share.ShareRequest(str(body["id"]), str(body["file"]), list(body.get("platforms", [])),
+                                                              dict(body.get("texts", {})), str(body.get("provider", "assistant")),
+                                                              bool(body.get("force"))))
+                    return self._send(200, json.dumps({"results": res}).encode())
+                except (share.ShareError, KeyError, TypeError) as e:
+                    return self._send(400, str(e).encode(), "text/plain")
+            elif path == "/api/share/mark":
+                ok = share.mark(store, str(body.get("id")), str(body.get("platform")), str(body.get("status")))
             elif path == "/api/describe":
                 ok = store.set_description(str(body.get("id")), str(body.get("title", "")), str(body.get("body", "")))
             elif path == "/api/purge":

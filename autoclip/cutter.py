@@ -165,7 +165,7 @@ def probe_duration(path: Path) -> float | None:
 
 
 def export_clip(src: Path, out: Path, start: float, end: float, cfg: Config, vertical: bool = False,
-                ass_text: str | None = None, layout: dict | None = None) -> bool:
+                ass_text: str | None = None, layout: dict | None = None, errors: list | None = None) -> bool:
     """FINAL clip: ONE precise encode that does trim + optional 9:16 layout + optional burned captions together.
     ffmpeg runs inside the output folder with bare file names so Windows drive letters ('C:') never break the ass filter."""
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -184,6 +184,8 @@ def export_clip(src: Path, out: Path, start: float, end: float, cfg: Config, ver
             (out.parent / ass_name).unlink(missing_ok=True)
     if r.returncode != 0 or not out.exists():
         log.error("export failed: %s", r.stderr.strip()[-500:])
+        if errors is not None:                       # lets the review page show WHY, e.g. "No such filter: 'ass'"
+            errors.append(r.stderr.strip().splitlines()[-1][:300] if r.stderr.strip() else f"ffmpeg exit code {r.returncode}")
         out.unlink(missing_ok=True)
         return False
     return True

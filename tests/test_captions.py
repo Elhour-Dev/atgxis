@@ -148,3 +148,72 @@ def test_review_page_javascript_is_syntactically_valid(tmp_path):
     f.write_text(js, encoding="utf-8")
     r = subprocess.run([node, "--check", str(f)], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
+
+
+def _fake_whisper(monkeypatch, behaviour):
+    """behaviour(vad) -> list of (word, start, end); records every call."""
+    import sys
+    import types
+    from autoclip import captions
+    calls = []
+
+    class W:
+        def __init__(self, w, a, b):
+            self.word, self.start, self.end = w, a, b
+
+    class Model:
+        def __init__(self, *a, **k):
+            pass
+
+        def transcribe(self, audio, vad_filter=True, **kw):
+            calls.append(vad_filter)
+            return [types.SimpleNamespace(words=[W(*x) for x in behaviour(vad_filter)])], None
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", types.SimpleNamespace(WhisperModel=Model))
+    captions._MODEL.clear()
+    return calls
+
+
+def _clip_with_audio(tmp_path):
+    clip = tmp_path / "c.mp4"
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=25:duration=3", "-f", "lavfi", "-i",
+                    "sine=frequency=300:duration=3", "-c:v", "libx264", "-c:a", "aac", "-shortest", str(clip)], check=True)
+    return clip
+
+
+def test_whisper_voice_filter_is_retried_without_vad(tmp_path, monkeypatch):
+    """Loud game audio can make the voice-activity filter discard real speech: must retry unfiltered."""
+    from autoclip import captions
+    calls = _fake_whisper(monkeypatch, lambda vad: [] if vad else [("finally", 0.5, 1.0)])
+    clip = _clip_with_audio(tmp_path)
+    assert captions.transcribe(clip, Config()) == [("finally", 0.5, 1.0)]
+    assert calls == [True, False]
+
+
+def test_empty_transcript_is_never_cached_so_a_clip_is_not_stuck_forever(tmp_path, monkeypatch):
+    from autoclip import captions
+    clip = _clip_with_audio(tmp_path)
+    _fake_whisper(monkeypatch, lambda vad: [])
+    with pytest.raises(captions.CaptionsUnavailable, match="no speech"):
+        captions.transcribe(clip, Config())
+    assert not clip.with_suffix(".words.json").exists()                              # nothing cached
+    clip.with_suffix(".words.json").write_text("[]")                                  # simulate the OLD bug's leftover empty cache
+    _fake_whisper(monkeypatch, lambda vad: [("hi", 0.1, 0.4)])
+    assert captions.transcribe(clip, Config()) == [("hi", 0.1, 0.4)]                  # recovers by itself
+
+
+def test_export_explains_when_trim_misses_the_speech_and_shows_ffmpeg_errors(tmp_path, monkeypatch):
+    from autoclip import review
+    from autoclip.cutter import probe_duration
+    src = _clip_with_audio(tmp_path)
+    meta = {"id": "ch/s/c", "file": "c.mp4", "channel": "ch", "status": "new", "score": 1, "duration_s": probe_duration(src), "exports": [],
+            "created": "x", "source_url": "x", "spike": {}}
+    (tmp_path / "c.clip.json").write_text(json.dumps(meta))
+    store = review.Store(tmp_path, Config(preset="ultrafast"))
+    monkeypatch.setattr(review, "transcribe", lambda p, c: [("hello", 2.0, 2.6)])
+    with pytest.raises(ValueError, match=r"nobody speaks between 0.0s and 1.0s.*2.0-2.6s"):
+        store.export("ch/s/c", 0.0, 1.0, True, True)                                  # speech is at 2.0s, trim is 0-1s
+    assert store.export("ch/s/c", 0.0, 2.9, True, True)                               # trim covering it works
+    monkeypatch.setattr(review, "build_ass", lambda *a, **k: "garbage that is not a subtitle file")
+    with pytest.raises(RuntimeError, match="ffmpeg failed: .+"):                       # a bad subtitle file: the reason reaches the UI
+        store.export("ch/s/c", 0.0, 2.9, False, True)

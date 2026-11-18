@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from . import config as cfgmod
+from . import settings
 from .worker import ChannelWorker
 
 
@@ -48,17 +49,40 @@ def cmd_doctor(_args) -> int:
     return 0 if ok else 1
 
 
-def cmd_run(args) -> int:
+def _load_cfg(args):
     cfg = cfgmod.load(args.config)
-    if args.out:
-        cfg.out_dir = args.out
+    settings.apply(cfg)                      # folders chosen in the review page
+    if getattr(args, "out", None):
+        cfg.out_dir = args.out               # command line wins
+    return cfg
+
+
+def _log_to_file(folder: Path) -> Path:
+    """Keep a log next to the clips so any problem can be sent for diagnosis."""
+    from logging.handlers import RotatingFileHandler
+    folder.mkdir(parents=True, exist_ok=True)
+    f = folder / "autoclip.log"
+    h = RotatingFileHandler(f, maxBytes=2_000_000, backupCount=3, encoding="utf-8")
+    h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    logging.getLogger().addHandler(h)
+    return f
+
+
+def cmd_run(args) -> int:
+    cfg = _load_cfg(args)
+    logfile = _log_to_file(Path(cfg.out_dir))
+    src = "config.toml" if (args.config or Path("config.toml").is_file()) else "built-in defaults (no config.toml found)"
+    print(f"Settings: {src} | sensitivity: mult {cfg.mult}{' (eases to 1.8 on big chats)' if cfg.auto_mult else ''}, "
+          f"min chatters {cfg.min_users}, audio assist {'on' if cfg.audio_assist else 'off'}")
+    print(f"Clips: {Path(cfg.out_dir).resolve()}" + (f"  | finished clips also copied to: {cfg.export_dir}" if cfg.export_dir else "")
+          + f"\nLog: {logfile}")
     stop = threading.Event()
     pool = ThreadPoolExecutor(max_workers=cfg.cut_workers, thread_name_prefix="cut")
     workers = [ChannelWorker(cfg, t, Path(cfg.out_dir), stop, pool=pool) for t in args.targets]
     for w in workers:
         w.start()
         time.sleep(1)
-    print(f"Clipping {len(workers)} stream(s) into {Path(cfg.out_dir).resolve()}.  Review later with:  python -m autoclip review\nCtrl+C to stop.")
+    print(f"Clipping {len(workers)} stream(s).  Review later with:  python -m autoclip review\nCtrl+C to stop.")
     try:
         while any(w.is_alive() for w in workers):
             time.sleep(0.5)
@@ -73,8 +97,8 @@ def cmd_run(args) -> int:
 
 def cmd_review(args) -> int:
     from .review import serve
-    cfg = cfgmod.load(args.config)
-    serve(Path(args.out or cfg.out_dir), cfg, args.port, not args.no_browser)
+    cfg = _load_cfg(args)
+    serve(Path(cfg.out_dir), cfg, args.port, not args.no_browser)
     return 0
 
 

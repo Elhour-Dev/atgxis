@@ -19,7 +19,8 @@ class ChatEvent:
     t: float            # unix time the message was seen
     user: str = ""
     text: str = ""
-    kind: str = "msg"   # "msg" | "raid"
+    kind: str = "msg"   # "msg" | "raid" | "audio"
+    db: float = 0.0     # for kind="audio": mean volume of a video segment in dB
 
 
 @dataclass
@@ -35,6 +36,7 @@ class Spike:
     hype_frac: float
     top: list[tuple[str, int]] = field(default_factory=list)
     score: float = 0.0
+    audio_db: float = 0.0       # how much louder than normal the stream got during the spike
 
 
 class _Bucket:
@@ -54,6 +56,7 @@ class _Acc:
         self.end = start
         self.baseline = baseline
         self.peak = 0
+        self.audio_db = 0.0
         self.peak_t = start
         self.users: set[str] = set()
         self.n = 0
@@ -98,9 +101,19 @@ class SpikeDetector:
         self.first_sec: int | None = None
         self.last_sec: int | None = None
         self.late = 0                   # messages that arrived after their second was processed
+        self.audio: deque[tuple[float, float]] = deque()   # (time, mean dB) per video segment
+        self.notes: list[str] = []      # human-readable events (near-misses) for the log
+        self.near_run = 0
+        self.near_flag = False
 
     # ---- input -------------------------------------------------------------------------------
     def add(self, ev: ChatEvent) -> None:
+        if ev.kind == "audio":
+            if ev.db > -80:                                   # ignore digital silence
+                self.audio.append((ev.t, ev.db))
+                while self.audio and self.audio[0][0] < ev.t - self.cfg.baseline_s:
+                    self.audio.popleft()
+            return
         if ev.kind == "raid":
             self.raid_until = max(self.raid_until, ev.t + self.cfg.raid_suppress_s)
             return
@@ -134,6 +147,20 @@ class SpikeDetector:
             self.last_sec = s
         return out
 
+    def pop_notes(self) -> list[str]:
+        n, self.notes = self.notes, []
+        return n
+
+    def _audio_boost(self, s: int) -> float:
+        """dB by which the loudest recent segment exceeds the channel's normal volume (0 if unknown)."""
+        if not self.cfg.audio_assist or len(self.audio) < 15:
+            return 0.0
+        recent = [db for t, db in self.audio if s - 8 <= t <= s + 4]
+        older = sorted(db for t, db in self.audio if t < s - 12)
+        if not recent or len(older) < 10:
+            return 0.0
+        return max(recent) - older[len(older) // 2]
+
     def flush(self) -> Spike | None:
         """Finish any open spike (used on shutdown)."""
         if self.cur and self.state in ("active", "cooling"):
@@ -157,9 +184,14 @@ class SpikeDetector:
             return 1.0
         return max(float(vals[len(vals) // 2]), 1.0)
 
-    def _threshold(self, baseline: float) -> float:
+    def _threshold(self, baseline: float, boost: float = 0.0) -> float:
         c = self.cfg
-        return max(c.min_users, c.mult * baseline, baseline + c.z * math.sqrt(baseline))
+        mult = c.mult
+        if c.auto_mult and baseline > 50:                  # steadier big chats: ease the multiplier down (never below 1.8)
+            mult = max(min(c.mult, 1.8), c.mult - 0.3 * math.log10(baseline / 50))
+        if boost >= c.audio_boost_db:                      # loud moment: chat only has to be mildly above normal
+            mult = min(mult, c.audio_mult)
+        return max(c.min_users, mult * baseline, baseline + c.z * math.sqrt(baseline))
 
     def _tick(self, s: int) -> Spike | None:
         c = self.cfg
@@ -169,12 +201,26 @@ class SpikeDetector:
         if self.state == "idle":
             base = self._baseline()
             warm = (s - self.first_sec) >= c.warmup_s
-            if warm and s >= self.cooldown_until and s >= self.raid_until and value >= self._threshold(base):
+            boost = self._audio_boost(s)
+            thr = self._threshold(base, boost)
+            if warm and s >= self.cooldown_until and s >= self.raid_until:
+                if thr * 0.8 <= value < thr:                 # so close: tell the log, so thresholds can be tuned on facts
+                    self.near_run += 1
+                    if self.near_run == 4 and not self.near_flag:
+                        self.near_flag = True
+                        self.notes.append(f"near-miss: chat {value / base:.1f}x normal (needed {thr / base:.1f}x)"
+                                          + (f", audio +{boost:.0f} dB" if boost >= 3 else ""))
+                else:
+                    self.near_run = 0
+                    if value < thr * 0.6:
+                        self.near_flag = False
+            if warm and s >= self.cooldown_until and s >= self.raid_until and value >= thr:
                 self.cur = _Acc(start=s - c.window_s + 1, baseline=base)
                 for i in range(s - c.window_s + 1, s + 1):
                     self.cur.add(self.buckets.get(i))
                 self.cur.peak, self.cur.peak_t, self.cur.end = value, s, s
                 self.cur.onset = self._onset(s)
+                self.cur.audio_db = boost
                 self.state, self.low_run = "active", 0
             else:
                 # only learn "normal" from quiet times, never from raids or spikes
@@ -188,6 +234,7 @@ class SpikeDetector:
             cur.add(self.buckets.get(s))
             if value > cur.peak:
                 cur.peak, cur.peak_t = value, s
+            cur.audio_db = max(cur.audio_db, self._audio_boost(s))
             if value >= cur.baseline * c.exit_ratio + 1:
                 cur.end, self.low_run = s, 0
             else:
@@ -224,7 +271,7 @@ class SpikeDetector:
         hype_frac = cur.hype / cur.n if cur.n else 0.0
         sp = Spike(start=cur.start, end=max(end, cur.start + 1), onset=cur.onset, peak_t=cur.peak_t, peak=cur.peak,
                    baseline=cur.baseline, msgs=cur.n, users=len(cur.users), hype_frac=round(hype_frac, 3),
-                   top=cur.texts.most_common(8))
+                   top=cur.texts.most_common(8), audio_db=round(cur.audio_db, 1))
         sp.score = score_spike(sp.peak, sp.baseline, sp.hype_frac)
         self.cur = None
         return sp

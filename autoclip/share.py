@@ -1,0 +1,189 @@
+"""Sharing finished clips to TikTok / YouTube Shorts / Instagram Reels.
+
+Safety rules (enforced here, not just in the page):
+  * only a clip you EXPORTED (trimmed, laid out, captioned) can be shared, never a raw draft;
+  * nothing is posted unless the page sends an explicit share request (the page asks you to confirm first);
+  * a platform that is already marked done is not posted again unless you force it;
+  * every result (done / opened / failed + the reason) is written to the clip's record.
+
+Providers do the actual posting. `assistant` needs no accounts: it opens the platform's upload page, reveals the file and you press
+Post. Automatic providers (platform APIs or a posting service) plug into PROVIDERS and get the same job description.
+"""
+from __future__ import annotations
+
+import re
+import time
+import webbrowser
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Callable
+
+from . import settings
+
+PLATFORMS: dict[str, dict] = {
+    "tiktok": {"label": "TikTok", "url": "https://www.tiktok.com/tiktokstudio/upload", "text_max": 2200},
+    "youtube": {"label": "YouTube Shorts", "url": "https://studio.youtube.com/", "title_max": 100, "text_max": 5000},
+    "instagram": {"label": "Instagram Reels", "url": "https://www.instagram.com/", "text_max": 2200, "hashtags_max": 30},
+}
+
+
+class ShareError(ValueError):
+    pass
+
+
+@dataclass
+class Job:
+    platform: str
+    video: Path
+    title: str
+    text: str            # caption / description exactly as it should be posted
+    privacy: str = "public"
+
+
+@dataclass
+class Result:
+    ok: bool
+    status: str          # "done" | "opened" | "failed"
+    message: str = ""
+    url: str | None = None
+
+
+def compose(platform: str, title: str, body: str) -> tuple[str, str]:
+    """(title, text) in the shape each platform wants."""
+    title, body = title.strip(), body.strip()
+    if platform == "youtube":
+        text = body if re.search(r"#shorts\b", body, re.I) else (body + "\n\n#Shorts").strip()
+        return title, text
+    return title, f"{title}\n\n{body}".strip()
+
+
+def check(platform: str, title: str, text: str, duration_s: float | None, vertical: bool) -> list[str]:
+    """Problems that would make the platform reject the post. Empty list = fine."""
+    spec, errs = PLATFORMS[platform], []
+    if not title.strip():
+        errs.append("title is empty")
+    if spec.get("title_max") and len(title) > spec["title_max"]:
+        errs.append(f"title is {len(title)} characters, {spec['label']} allows {spec['title_max']}")
+    if len(text) > spec["text_max"]:
+        errs.append(f"text is {len(text)} characters, {spec['label']} allows {spec['text_max']}")
+    if spec.get("hashtags_max") and len(re.findall(r"#\w+", text)) > spec["hashtags_max"]:
+        errs.append(f"too many hashtags (max {spec['hashtags_max']})")
+    if not vertical:
+        errs.append("this export is not vertical 9:16: tick 'Vertical 9:16' and export again")
+    if duration_s and duration_s > 180:
+        errs.append("clip is longer than 3 minutes")
+    return errs
+
+
+class Provider:
+    name, label, automatic = "base", "base", False
+
+    def configured(self) -> bool:
+        return True
+
+    def publish(self, job: Job) -> Result:
+        raise NotImplementedError
+
+
+class AssistantProvider(Provider):
+    """No accounts, no API: opens the upload page and shows the file. You press Post (about 10 seconds per platform)."""
+    name, label, automatic = "assistant", "Share assistant (opens the page, you press Post)", False
+
+    def __init__(self, open_url: Callable[[str], object] = webbrowser.open, reveal: Callable[[Path], None] = settings.reveal):
+        self.open_url, self.reveal = open_url, reveal
+
+    def publish(self, job: Job) -> Result:
+        label = PLATFORMS[job.platform]["label"]
+        self.open_url(PLATFORMS[job.platform]["url"])
+        self.reveal(job.video)
+        return Result(True, "opened", f"{label} page opened and the video file is selected in your file manager. "
+                                      "Caption is on your clipboard: paste it, attach the video, press Post.")
+
+
+PROVIDERS: dict[str, Provider] = {"assistant": AssistantProvider()}
+
+
+def providers_info() -> list[dict]:
+    return [{"name": p.name, "label": p.label, "automatic": p.automatic, "configured": p.configured()} for p in PROVIDERS.values()]
+
+
+@dataclass
+class ShareRequest:
+    clip_id: str
+    file: str
+    platforms: list[str]
+    texts: dict[str, dict] = field(default_factory=dict)       # {platform: {"title":..., "body":...}}
+    provider: str = "assistant"
+    force: bool = False
+
+
+def run(store, req: ShareRequest) -> dict[str, dict]:
+    """Validate everything first, then post platform by platform. Returns {platform: {status, message, url}}."""
+    path, meta = store.find(req.clip_id)
+    if not path:
+        raise ShareError("clip not found")
+    ex = next((e for e in meta.get("exports", []) if e["file"] == req.file), None)
+    if not ex:
+        raise ShareError("share an exported clip: press 'Export clip' first, then share that file")
+    video = path.parent / ex["file"]
+    if not video.is_file():
+        raise ShareError("the exported file is missing on disk")
+    prov = PROVIDERS.get(req.provider)
+    if not prov or not prov.configured():
+        raise ShareError(f"sharing method '{req.provider}' is not set up")
+    plats = list(dict.fromkeys(req.platforms))
+    if not plats or any(p not in PLATFORMS for p in plats):
+        raise ShareError("choose at least one platform: " + ", ".join(PLATFORMS))
+    jobs, problems = [], []
+    for pl in plats:
+        t = req.texts.get(pl) or {}
+        title, text = compose(pl, str(t.get("title", "")), str(t.get("body", "")))
+        errs = check(pl, title, text, meta.get("duration_s"), bool(ex.get("vertical")))
+        if errs:
+            problems.append(f"{PLATFORMS[pl]['label']}: " + "; ".join(errs))
+        done = (meta.get("shares") or {}).get(pl, {}).get("status") == "done"
+        if done and not req.force:
+            problems.append(f"{PLATFORMS[pl]['label']}: already posted (tick 'post again' to repeat)")
+        jobs.append(Job(pl, video, title, text))
+    if problems:                                               # nothing is posted if ANY platform fails validation
+        raise ShareError(" | ".join(problems))
+    results: dict[str, dict] = {}
+    for job in jobs:
+        try:
+            r = prov.publish(job)
+        except Exception as e:                                 # one platform failing must not stop or hide the others
+            r = Result(False, "failed", f"{type(e).__name__}: {e}")
+        results[job.platform] = {"status": r.status, "message": r.message, "url": r.url, "ok": r.ok, "title": job.title, "text": job.text}
+        record(store, req.clip_id, job.platform, r, prov.name, ex["file"])
+    return results
+
+
+def record(store, clip_id: str, platform: str, r: Result, provider: str, file: str) -> None:
+    with store.lock:
+        p, m = store.find(clip_id)
+        if not p:
+            return
+        m.setdefault("shares", {})[platform] = {"status": r.status, "message": r.message, "url": r.url, "provider": provider,
+                                                "file": file, "at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+        from .review import _write_json
+        _write_json(p, m)
+
+
+def mark(store, clip_id: str, platform: str, status: str) -> bool:
+    """You press Post yourself with the assistant, then tell the app: 'done' (or 'reset' to clear it)."""
+    if platform not in PLATFORMS or status not in ("done", "reset"):
+        return False
+    with store.lock:
+        p, m = store.find(clip_id)
+        if not p:
+            return False
+        shares = m.setdefault("shares", {})
+        if status == "reset":
+            shares.pop(platform, None)
+        else:
+            cur = shares.get(platform, {})
+            shares[platform] = {**cur, "status": "done", "provider": cur.get("provider", "manual"),
+                                "at": time.strftime("%Y-%m-%dT%H:%M:%S"), "message": "marked as posted"}
+        from .review import _write_json
+        _write_json(p, m)
+    return True

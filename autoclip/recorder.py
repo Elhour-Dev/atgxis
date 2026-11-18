@@ -69,6 +69,7 @@ class Recorder(threading.Thread):
         self._segs: list[Segment] = []
         self._lock = threading.Lock()
         self.live = threading.Event()
+        self.on_segments = None          # optional callback(list[Segment]) for every batch of new segments
 
     # ---- queries -----------------------------------------------------------------------------
     def segments_between(self, a: float, b: float) -> list[Segment]:
@@ -123,6 +124,11 @@ class Recorder(threading.Thread):
                             t_end -= en - st
                         with self._lock:
                             self._segs.extend(reversed(built))
+                        if self.on_segments:
+                            try:
+                                self.on_segments(list(reversed(built)))
+                            except Exception:
+                                log.exception("segment callback failed")
                         seen, produced, last_new = len(rows), len(rows), now
                         self.live.set()
                     elif produced and time.time() - last_new > 45:

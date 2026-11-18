@@ -59,6 +59,29 @@ python -m autoclip review                                   # later: opens the r
 Loudness bonus: a clip scores up to +10 if the audio is louder after the moment than before it
 (streamer/game reacting), which filters chat-only false alarms.
 
+## Finding the moments (sensitivity)
+* A `config.toml` in the project folder is **loaded automatically** (no `--config` flag). The first line printed at start shows
+  which settings are in use; if it says "built-in defaults" your `config.toml` was not found.
+* **Chat spike**: unique chatters in 10 s vs the channel's own normal level. The multiplier is 2.0 and eases down to 1.8 on big chats.
+* **Loud moments help**: when the stream gets 8+ dB louder than normal (streamer screaming, game explosion), chat only needs to
+  be 1.35x normal. Loud audio alone never makes a clip (`audio_assist = false` turns this off).
+* **Near-misses are logged** (`near-miss: chat 1.7x normal (needed 1.9x)`): if you see many for moments you wanted, lower `mult`.
+  A session summary at the end counts spikes, near-misses, clips, skipped duplicates and failed cuts.
+* Everything is also written to `autoclip.log` in the clips folder: send that file when something looks wrong.
+* Window position: the 30 s window starts 15 s before chat took off. Use **◀ 5 s / 5 s ▶** in the review page to slide it.
+
+## Folders
+**📁 Folders** in the review page: pick where **finished clips** are copied (any folder, with a Browse dialog) and where drafts live.
+Saved in your user settings (`%APPDATA%\autoclip\settings.json`), so `git pull` never overwrites them. **📂** next to an export shows it in
+Explorer.
+
+## Sharing to TikTok / YouTube Shorts / Instagram Reels
+Export a clip (vertical, trimmed, captions as you like), open **Share**, tick the platforms, **Share selected...**. You always get a
+confirmation first; nothing is opened or posted before you press OK. Safety rules: only exported clips can be shared, one invalid
+platform blocks the whole request, an already-posted platform is not posted again unless you tick "post again", and each result is
+recorded. The built-in **Share assistant** opens each platform's upload page, selects the file and copies the caption; you press Post.
+Automatic posting needs an account/API route (see the project notes) and plugs into the same panel.
+
 ## Vertical clips: webcam on top, gameplay below (Reels / TikTok / Shorts)
 Every clip is exported **automatically as a ready 1080x1920, 30 fps, exactly 30 s video**. Until you teach it where a streamer's
 webcam is, it uses a blurred full frame. Do this **once per streamer** (takes ~20 seconds):

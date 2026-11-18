@@ -34,26 +34,47 @@ def decode_audio(path: Path):
     return np.frombuffer(r.stdout, dtype=np.float32)
 
 
+def _run_model(model, audio, vad: bool) -> list[Word]:
+    segs, _ = model.transcribe(audio, word_timestamps=True, vad_filter=vad, condition_on_previous_text=False, beam_size=5)
+    return [(w.word.strip(), float(w.start), float(w.end)) for s in segs for w in (s.words or []) if w.word.strip()]
+
+
 def transcribe(path: Path, cfg: Config) -> list[Word]:
-    """Word-level transcript with timestamps. Cached next to the clip as <clip>.words.json."""
+    """Word-level transcript with timestamps, cached next to the clip as <clip>.words.json (only when speech was found)."""
     cache = path.with_suffix(".words.json")
     if cache.exists():
-        return [tuple(w) for w in json.loads(cache.read_text(encoding="utf-8"))]
+        try:
+            words = [tuple(w) for w in json.loads(cache.read_text(encoding="utf-8"))]
+            if words:
+                return words
+        except (OSError, ValueError):
+            pass
+        cache.unlink(missing_ok=True)                  # an empty/corrupt cache from an earlier attempt must not stick forever
     try:
         from faster_whisper import WhisperModel
     except ImportError as e:
         raise CaptionsUnavailable("Captions need:  pip install faster-whisper") from e
-    audio = decode_audio(path)                     # fail fast (no audio track) before loading a large model
+    audio = decode_audio(path)                         # fail fast (no audio track) before loading a large model
     key = (cfg.whisper_model, cfg.whisper_device)
     if key not in _MODEL:
         try:
             _MODEL[key] = WhisperModel(cfg.whisper_model, device=cfg.whisper_device, compute_type="auto")
         except Exception:
             _MODEL[key] = WhisperModel(cfg.whisper_model, device="cpu", compute_type="int8")
-    segs, _ = _MODEL[key].transcribe(audio, word_timestamps=True, vad_filter=True)
-    words = [(w.word.strip(), float(w.start), float(w.end)) for s in segs for w in (s.words or []) if w.word.strip()]
+    model = _MODEL[key]
+    words = _run_model(model, audio, vad=True)
+    if not words:
+        # The voice-activity filter can wipe out real speech over loud game audio / music: retry without it.
+        log.info("captions: no speech with the voice filter, retrying without it for %s", path.name)
+        words = _run_model(model, audio, vad=False)
+    if not words:
+        raise CaptionsUnavailable("no speech could be detected in this clip (music, game sound or silence only)")
     cache.write_text(json.dumps(words, ensure_ascii=False), encoding="utf-8")
     return words
+
+
+def words_in_window(words: list[Word], start: float, end: float) -> list[Word]:
+    return [w for w in words if w[2] > start and w[1] < end]
 
 
 def _clean(t: str) -> str:

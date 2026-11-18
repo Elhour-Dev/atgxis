@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+from .audio import AudioMeter
 from .chat import TwitchChat, YouTubeChat
 from .config import Config
 from .cutter import cut_clip, cut_draft, draft_offset, export_clip, loudness_jump, probe_duration
@@ -41,7 +42,7 @@ def suggest_window(sp: Spike, cfg: Config) -> tuple[float, float]:
     """Wall-clock window of exactly cfg.clip_len_s: a few seconds of lead-in before the moment, and always
     containing the chat peak (the reaction). Long spikes slide the window to the peak instead of getting longer."""
     n = cfg.clip_len_s
-    start = sp.onset - cfg.reaction_lag_s - 4
+    start = sp.onset - cfg.reaction_lag_s - cfg.lead_in_s
     if sp.peak_t + 5 > start + n:
         start = sp.peak_t + 5 - n
     return start, start + n
@@ -80,6 +81,11 @@ class ChannelWorker(threading.Thread):
         self.pool = pool or ThreadPoolExecutor(max_workers=cfg.cut_workers, thread_name_prefix=f"cut-{label}")
         self.recent: list[tuple[float, float]] = []
         self._warned_layout = False
+        self.stats = {"spikes": 0, "near_misses": 0, "clips": 0, "skipped_duplicates": 0, "failed_cuts": 0}
+        self.meter = None
+        if cfg.audio_assist:
+            self.meter = AudioMeter(self.events.put, stop)
+            self.recorder.on_segments = self.meter.submit
         self.pending: list[tuple[float, float, float, Spike]] = []   # (cut_at, a, b, spike)
         self.clips_made = 0
         self.root = out_root
@@ -89,6 +95,8 @@ class ChannelWorker(threading.Thread):
         log.info("[%s] watching %s (warming up %ds before clipping)", self.label, self.url, self.cfg.warmup_s)
         self.recorder.start()
         self.chat.start()
+        if self.meter:
+            self.meter.start()
         grace = self.cfg.chat_grace_s + (4 if self.platform == "youtube" else 0)
         last_status = time.time()
         while not self.stop_evt.wait(1.0):
@@ -99,7 +107,11 @@ class ChannelWorker(threading.Thread):
             except queue.Empty:
                 pass
             for sp in self.detector.advance(now - grace):
+                self.stats["spikes"] += 1
                 self._schedule(sp)
+            for note in self.detector.pop_notes():
+                self.stats["near_misses"] += 1
+                log.info("[%s] %s", self.label, note)
             for item in [p for p in self.pending if now >= p[0]]:
                 self.pending.remove(item)
                 self.pool.submit(self._cut, item[1], item[2], item[3])
@@ -111,6 +123,7 @@ class ChannelWorker(threading.Thread):
             log.info("[%s] %d spike(s) still waiting for video at shutdown were dropped", self.label, len(self.pending))
         if self.own_pool:
             self.pool.shutdown(wait=True)
+        log.info("[%s] session summary: %s", self.label, ", ".join(f"{v} {k.replace('_', ' ')}" for k, v in self.stats.items()))
         self.recorder.join(timeout=20)      # make sure ffmpeg/streamlink are really stopped and the buffer is deleted
 
     def _schedule(self, sp: Spike):
@@ -118,11 +131,26 @@ class ChannelWorker(threading.Thread):
         a, b = sp.start - c.pre_s, sp.end + c.post_s
         if b - a > c.max_clip_s:
             a = b - c.max_clip_s
-        log.info("[%s] spike: %d chatters (normal %.0f), score %.0f -> clip in ~%ds",
-                 self.label, sp.peak, sp.baseline, sp.score, c.post_s + c.segment_s * 2)
+        log.info("[%s] spike: %d chatters (normal %.0f, %.1fx)%s, score %.0f -> clip in ~%ds",
+                 self.label, sp.peak, sp.baseline, sp.peak / max(sp.baseline, 1),
+                 f", audio +{sp.audio_db:.0f} dB" if sp.audio_db >= 3 else "", sp.score, c.post_s + c.segment_s * 2)
         self.pending.append((b + c.segment_s * 1.5 + 2, a, b, sp))
 
     # ---- cutting -----------------------------------------------------------------------------
+    def _copy_final(self, f: Path) -> str | None:
+        """Also place the finished clip in the folder chosen for final clips."""
+        if not self.cfg.export_dir:
+            return None
+        try:
+            import shutil
+            dest = Path(self.cfg.export_dir) / self.label
+            dest.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(f, dest / f.name)
+            return str(dest / f.name)
+        except OSError as e:
+            log.warning("[%s] could not copy to the final clips folder %s: %s", self.label, self.cfg.export_dir, e)
+            return None
+
     def _duplicate(self, a: float, b: float) -> bool:
         for a2, b2 in self.recent:
             if (min(b, b2) - max(a, a2)) / max(min(b - a, b2 - a2), 1) >= self.cfg.dup_overlap:
@@ -137,6 +165,7 @@ class ChannelWorker(threading.Thread):
                 return
             if self._duplicate(a, b):
                 log.info("[%s] skipped a clip that mostly repeats the previous one", self.label)
+                self.stats["skipped_duplicates"] += 1
                 return
             self.out_dir.mkdir(parents=True, exist_ok=True)
             cid = "clip_" + datetime.fromtimestamp(sp.onset).strftime("%H%M%S")
@@ -152,6 +181,7 @@ class ChannelWorker(threading.Thread):
             else:
                 res = cut_draft(segs, a, b, out)
                 if not res:
+                    self.stats["failed_cuts"] += 1
                     return
                 sel, d0 = res
                 sug_a = draft_offset(sel, sa)
@@ -174,6 +204,7 @@ class ChannelWorker(threading.Thread):
             tmp.replace(out.with_suffix(".clip.json"))
             self.recent.append((a, b))
             self.clips_made += 1
+            self.stats["clips"] += 1
             log.info("[%s] saved %s  draft %.0fs, suggested trim %.0f-%.0fs, score %.0f", self.label, out.name, dur, sug[0], sug[1], score)
             if c.vertical == "auto":                                        # ready-to-post 9:16 of the suggested trim
                 layout = LayoutStore(self.root).get(self.label)
@@ -184,9 +215,11 @@ class ChannelWorker(threading.Thread):
                 fin = out.with_name(f"{cid}_vertical.mp4")
                 if export_clip(out, fin, sug[0], sug[1], c, vertical=True, layout=layout):
                     meta["exports"].append({"file": fin.name, "start": sug[0], "end": sug[1], "vertical": True,
-                                            "captions": False, "layout": (layout or {}).get("mode", c.vertical_mode)})
+                                            "captions": False, "layout": (layout or {}).get("mode", c.vertical_mode),
+                                            "copy": self._copy_final(fin)})
                     tmp.write_text(json.dumps(meta, indent=1, ensure_ascii=False), encoding="utf-8")
                     tmp.replace(out.with_suffix(".clip.json"))
                     log.info("[%s] vertical ready: %s", self.label, fin.name)
         except Exception:
+            self.stats["failed_cuts"] += 1
             log.exception("[%s] cut failed", self.label)

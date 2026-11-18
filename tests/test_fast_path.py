@@ -148,7 +148,7 @@ def test_suggested_window_is_always_exactly_30s_and_contains_the_reaction():
         return Spike(start=onset - 9, end=end, onset=onset, peak_t=peak, peak=50, baseline=5, msgs=100, users=50, hype_frac=.5)
 
     a, b = suggest_window(sp(1000, 1008, 1015), cfg)
-    assert b - a == 30 and a == 1000 - 8 - 4                              # lead-in before the moment
+    assert b - a == 30 and a == 1000 - 10 - 5                             # 15 s lead-in before the chat onset
     assert a <= 1000 and b >= 1008 + 5                                    # moment and reaction both inside
     a, b = suggest_window(sp(1000, 1055, 1060), cfg)                      # long spike, peak late: window slides to the peak
     assert b - a == 30 and a <= 1055 <= b - 5
@@ -186,6 +186,7 @@ def test_transcribe_gives_whisper_decoded_audio_not_a_file_path(tmp_path, monkey
     captions._MODEL.clear()
     words = captions.transcribe(clip, Config())
     assert words == [("hello", 0.5, 0.9), ("world", 1.0, 1.4)]
+    assert seen["kw"]["vad_filter"] is True
     assert isinstance(seen["audio"], np.ndarray) and seen["audio"].dtype == np.float32     # array, not a path
     assert abs(len(seen["audio"]) - 3 * 16000) < 1600                                      # 3 s at 16 kHz
     assert seen["kw"]["word_timestamps"] is True
