@@ -69,7 +69,16 @@ webcam is, it uses a blurred full frame. Do this **once per streamer** (takes ~2
 3. Press **Preview** to see the finished vertical frame, then **Save layout**. All future clips for that channel use it.
    Press **Export clip** on older clips to re-render them with the new layout.
 Other options: whole screen on a blurred background, plain center crop, adjustable webcam/gameplay split (40-60%).
-Captions (if enabled) sit on the line between the two halves.
+
+**Subtitle position:** in the same editor, drag the **green box** on the vertical preview to where subtitles should appear
+(its height sets the text size; the sample text inside shows how it will look and wrap). Saved per streamer along with the layout.
+Without a saved box, captions sit on the line between webcam and gameplay.
+
+## Post text (title + description) for every clip
+Open **Post text** on any clip: you get a suggested title (press ↻ for other options), plus a description with a credit line to
+the streamer and hashtags. Edit freely (it autosaves) and press **Copy title + description**. These are rule-based suggestions
+built from what chat was spamming (KEKW = funny, WTF = shock, POG = hype), not AI-written copy: treat them as a starting point.
+Set nicer names in `config.toml`:  `display_names = { kaicenat = "Kai Cenat" }`,  `hashtags = ["fyp", "gaming"]`,  `credit_line = false`.
 
 **Speed:** the encoder is chosen automatically (NVIDIA / Intel / AMD hardware encoder if it really works, else CPU), runs at
 below-normal priority so your game/stream never stutters, and loudness is normalized for social platforms.

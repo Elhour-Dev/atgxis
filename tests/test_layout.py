@@ -1,4 +1,5 @@
 import json
+import re
 import subprocess
 import threading
 import urllib.error
@@ -87,13 +88,14 @@ def test_auto_encoder_falls_back_to_cpu_when_no_gpu():
 
 
 def test_captions_sit_on_the_seam_in_split_layout():
-    def style(ass):
-        f = next(l for l in ass.splitlines() if l.startswith("Style:"))[len("Style: "):].split(",")
-        return int(f[18]), int(f[21])                                      # (Alignment, MarginV)
+    def where(ass):
+        d = next(l for l in ass.splitlines() if l.startswith("Dialogue"))
+        an, x, y = re.search(r"\\an(\d)\\pos\((\d+),(\d+)\)", d).groups()
+        return int(an), int(x), int(y)
     words = [("hello", 0.0, 0.5)]
-    assert style(build_ass(words, 0, 2, True, seam=True)) == (5, 0)        # middle-center = the line between the two halves
-    al, mv = style(build_ass(words, 0, 2, True, seam=False))
-    assert al == 2 and mv > 300                                            # plain vertical: lower third
+    assert where(build_ass(words, 0, 2, True, seam=True)) == (5, 540, 960)          # middle of the 1080x1920 frame = the seam
+    an, x, y = where(build_ass(words, 0, 2, True, seam=False))
+    assert an == 2 and x == 540 and y == 1920 - int(1920 * 0.30)                    # plain vertical: lower third, bottom-anchored
 
 
 def test_layout_store_roundtrip_and_atomic(tmp_path):

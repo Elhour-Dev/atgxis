@@ -27,3 +27,8 @@ max_clips_gb = 20
 # buffer_dir = "D:/autoclip_buffer"  # put the 10-minute rolling buffer on a fast/large drive
 
 # bots = ["nightbot", "my_custom_bot"]   # replaces the built-in list, so include the defaults you still want
+
+# --- post text suggestions ---
+# hashtags = ["fyp", "viral", "streamer", "twitch", "clips"]
+# credit_line = true                       # "Clip from <streamer>: <link>" in the description
+# display_names = { kaicenat = "Kai Cenat" }

@@ -67,6 +67,11 @@ class Config:
     out_dir: str = "clips"
     max_clips_gb: float = 20.0  # stop cutting if the clips folder exceeds this
 
+    # --- post text suggestions (review page) ---
+    hashtags: list[str] = field(default_factory=lambda: ["fyp", "viral", "streamer", "twitch", "clips"])
+    credit_line: bool = True    # add "Clip from <streamer>: <link>" to the suggested description
+    display_names: dict[str, str] = field(default_factory=dict)   # e.g. { kaicenat = "Kai Cenat" }
+
     bots: list[str] = field(default_factory=lambda: list(DEFAULT_BOTS))
     hype_terms: list[str] = field(default_factory=lambda: list(DEFAULT_HYPE))
 

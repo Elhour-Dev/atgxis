@@ -44,6 +44,15 @@ def validate(layout: dict) -> dict:
     if mode not in MODES:
         raise LayoutError(f"mode must be one of {MODES}")
     out: dict = {"mode": mode}
+    cap = layout.get("captions")
+    if cap is not None:                                  # where the subtitles go, as fractions of the 1080x1920 output
+        try:
+            x, y, w, h = (float(cap[k]) for k in ("x", "y", "w", "h"))
+        except (KeyError, TypeError, ValueError):
+            raise LayoutError("captions needs numeric x, y, w, h") from None
+        if not (0 <= x < 1 and 0 <= y < 1 and 0.2 <= w <= 1 and 0.03 <= h <= 0.5 and x + w <= 1.001 and y + h <= 1.001):
+            raise LayoutError("captions box is outside the frame or too small")
+        out["captions"] = {k: round(v, 5) for k, v in zip("xywh", (x, y, w, h))}
     if mode != "split":
         return out
 

@@ -14,6 +14,7 @@ from .config import Config
 from .captions import CaptionsUnavailable, build_ass, transcribe
 from . import layout as lay
 from .cutter import export_clip, grab_frame
+from .describe import suggest as suggest_description
 from .facecam import FacecamUnavailable, detect_facecam
 from .layout import LayoutError, LayoutStore
 
@@ -42,6 +43,12 @@ canvas{max-width:100%;border-radius:8px;touch-action:none;cursor:crosshair;backg
 .pv{height:560px;max-width:100%;border-radius:8px;background:#000;object-fit:contain}
 .hint{font-size:13px;color:var(--mut)}
 video.vert{max-height:360px;width:auto;align-self:flex-start}
+.pw{position:relative;height:560px;aspect-ratio:9/16;background:#000;border-radius:8px;overflow:hidden;flex:none}
+.pvimg{position:absolute;inset:0;width:100%;height:100%;object-fit:fill;visibility:hidden}
+.capbox{position:absolute;border:2px dashed #22c55e;background:#22c55e22;display:flex;align-items:center;justify-content:center;color:#fff;font:800 14px Arial,sans-serif;text-align:center;cursor:move;touch-action:none;overflow:hidden;box-sizing:border-box;text-shadow:0 0 4px #000,0 0 4px #000}
+.caph{position:absolute;right:0;bottom:0;width:14px;height:14px;background:#22c55e;cursor:nwse-resize}
+details{background:#8881;border-radius:8px;padding:6px 8px}summary{cursor:pointer;font-size:14px}
+details input[type=text],details textarea{width:100%;box-sizing:border-box;font:inherit;padding:6px;border-radius:6px;border:1px solid #8884;background:var(--bg);color:var(--fg);margin-top:6px}
 </style>
 <header><h1>Clip review</h1>
 <select id=f><option value=new>To review</option><option value=keep>Kept</option><option value=trash>Trash</option><option value=all>All</option></select>
@@ -89,6 +96,14 @@ function render(){
     const ex=el('button','primary','Export clip');ex.onclick=async()=>{ex.disabled=true;ex.textContent='Encoding…';const ok=await post('/api/export',{id:c.id,start:t.start,end:t.end,vertical:t.vertical,captions:t.captions});ex.disabled=false;ex.textContent='Export clip';if(ok)load(true)};
     r2.append(ex);tr.append(r1,r2);card.append(tr);
     if((c.exports||[]).length){const e=el('div','row');e.append(el('span','mut','Exports:'));for(const x of c.exports){const l=el('a',null,(x.vertical?'9:16 ':'')+(x.captions?'CC ':'')+fmt(x.start)+'-'+fmt(x.end));l.href=fileUrl(c,x.file);l.target='_blank';e.append(l)}card.append(e)}
+    {const d=c.description||{title:'',body:'',alts:[]},det=el('details');det.append(el('summary',null,'Post text: title + description ('+(d.category||'')+')'));
+      const ti=el('input');ti.type='text';ti.value=d.title||'';const ta=el('textarea');ta.rows=4;ta.value=d.body||'';
+      let timer;const save=()=>{clearTimeout(timer);timer=setTimeout(()=>post('/api/describe',{id:c.id,title:ti.value,body:ta.value}),600)};
+      ti.oninput=save;ta.oninput=save;const alts=d.alts||[];let ai=Math.max(alts.indexOf(d.title),0);
+      const other=el('button',null,'↻ Other title');other.onclick=()=>{if(!alts.length)return;ai=(ai+1)%alts.length;ti.value=alts[ai];save()};
+      const cp=el('button',null,'Copy title + description');cp.onclick=async()=>{const t=ti.value+'\\n\\n'+ta.value;
+        try{await navigator.clipboard.writeText(t)}catch(e){ta.select();document.execCommand('copy')}cp.textContent='Copied ✓';setTimeout(()=>cp.textContent='Copy title + description',1500)};
+      const dr=el('div','row');dr.append(other,cp);det.append(ti,ta,dr);card.append(det)}
     const lb=el('button',null,layouts[c.channel]?'Edit layout for '+c.channel+' ✓':'Set layout for '+c.channel+' (webcam + gameplay)');lb.onclick=()=>openLayout(c,v);card.append(lb);
     const vx=(c.exports||[]).filter(x=>x.vertical).slice(-1)[0];
     if(vx){const pvid=el('video','vert');pvid.controls=true;pvid.preload='metadata';pvid.src=fileUrl(c,vx.file);card.append(el('div','mut','Vertical preview (latest export):'),pvid)}
@@ -107,7 +122,7 @@ function openLayout(c,video){
   if(!L.mode)L.mode='split';if(!L.split)L.split=0.5;if(!L.game_fit)L.game_fit='cover';
   const ov=el('div','modal'),box=el('div','mbox');ov.append(box);
   box.append(el('h2',null,'Vertical layout for '+c.channel));
-  box.append(el('div','hint','Drag the RED box over the webcam and the BLUE box over the part of the game you want to show. Drag a box to move it, drag its bottom-right square to resize. Set it once per streamer; every clip uses it.'));
+  box.append(el('div','hint','Drag the RED box over the webcam and the BLUE box over the part of the game you want to show. Drag a box to move it, drag its bottom-right square to resize. Drag the GREEN box on the vertical preview (right) to place the subtitles; its height sets the text size. Set it once per streamer; every clip uses it.'));
   const ctl=el('div','row'),mode=el('select');
   for(const [v,t] of [['split','Webcam on top + gameplay below'],['blur','Whole screen on blurred background'],['crop','Plain center crop']]){const o=el('option',null,t);o.value=v;mode.append(o)}
   mode.value=L.mode;
@@ -115,10 +130,22 @@ function openLayout(c,video){
   const sp=el('input');sp.type='range';sp.min='40';sp.max='60';sp.value=Math.round(L.split*100);
   const spl=el('span','mut','Webcam height '+sp.value+'%');
   const tin=numInput((+video.currentTime||0).toFixed(1),()=>{});const tb=el('button',null,'Load frame at (s)');
-  const auto=el('button',null,'Auto-detect webcam'),pv=el('button',null,'Preview'),save=el('button','primary','Save layout'),close=el('button',null,'Close');
-  ctl.append(mode,fit,sp,spl,el('span','mut','Frame:'),tin,tb,auto,pv,save,close);box.append(ctl);
-  const cols=el('div','mcols'),cv=el('canvas'),img=new Image(),pimg=el('img','pv');pimg.alt='Preview appears here';
-  cols.append(cv,pimg);box.append(cols);document.body.append(ov);
+  const resetCap=el('button',null,'Reset subtitle box'),auto=el('button',null,'Auto-detect webcam'),pv=el('button',null,'Preview'),save=el('button','primary','Save layout'),close=el('button',null,'Close');
+  ctl.append(mode,fit,sp,spl,el('span','mut','Frame:'),tin,tb,auto,resetCap,pv,save,close);box.append(ctl);
+  const cols=el('div','mcols'),cv=el('canvas'),img=new Image(),pimg=el('img','pvimg'),pw=el('div','pw'),cap=el('div','capbox'),capH=el('div','caph');
+  cap.append(el('span'),capH);pw.append(pimg,cap);cols.append(cv,pw);box.append(cols);document.body.append(ov);
+  let C=L.captions?{...L.captions}:null,cd=null;
+  const capDefault=()=>L.mode==='split'?{x:0.06,y:0.46,w:0.88,h:0.08}:{x:0.06,y:0.70,w:0.88,h:0.08};
+  const cc=()=>C||capDefault();
+  function renderCap(){const r=cc(),sp=cap.firstChild;cap.style.left=r.x*100+'%';cap.style.top=r.y*100+'%';cap.style.width=r.w*100+'%';cap.style.height=r.h*100+'%';
+    cap.style.fontSize=(pw.clientHeight/1920*Math.min(Math.max(r.h*1920*0.6,24),150))+'px';   // same size rule as the exported subtitles
+    sp.replaceChildren(document.createTextNode('THIS IS '));const hi=el('span',null,'INSANE');hi.style.color='#ffe600';sp.append(hi)}
+  cap.onpointerdown=e=>{const r=cc();C={...r};cd={t:e.target===capH?'size':'move',x:e.clientX,y:e.clientY,r:{...r}};cap.setPointerCapture(e.pointerId);e.preventDefault()};
+  cap.onpointermove=e=>{if(!cd)return;const b=pw.getBoundingClientRect(),dx=(e.clientX-cd.x)/b.width,dy=(e.clientY-cd.y)/b.height,r=cd.r;
+    if(cd.t==='move'){C.x=Math.min(Math.max(r.x+dx,0),1-r.w);C.y=Math.min(Math.max(r.y+dy,0),1-r.h)}
+    else{C.w=Math.min(Math.max(r.w+dx,0.2),1-r.x);C.h=Math.min(Math.max(r.h+dy,0.03),Math.min(0.5,1-r.y))}
+    renderCap()};
+  cap.onpointerup=()=>{cd=null};
   const msg=el('div','hint');box.append(msg);
   let W=0,H=0,drag=null;
   const hh=()=>{const t=even(OUTH*L.split);return [t,OUTH-t]};
@@ -137,8 +164,8 @@ function openLayout(c,video){
       g.fillStyle=col+'33';g.fillRect(r.x,r.y,r.w,r.h);g.fillStyle=col;g.fillRect(r.x+r.w-12,r.y+r.h-12,12,12);
       g.font='bold 14px sans-serif';g.fillText(label,r.x+6,r.y+18)}}
   function sync(){const split=mode.value==='split';fit.style.display=sp.style.display=spl.style.display=auto.style.display=split?'':'none'}
-  function layoutOut(){if(mode.value!=='split')return {mode:mode.value};
-    return {mode:'split',split:L.split,game_fit:L.game_fit,facecam:L.facecam,game:L.game_fit==='cover'?L.game:null}}
+  function layoutOut(){const o=mode.value!=='split'?{mode:mode.value}:{mode:'split',split:L.split,game_fit:L.game_fit,facecam:L.facecam,game:L.game_fit==='cover'?L.game:null};
+    if(C)o.captions={x:C.x,y:C.y,w:C.w,h:C.h};return o}
   function loadFrame(){msg.textContent='Loading frame…';img.src='/api/frame?id='+encodeURIComponent(c.id)+'&t='+(parseFloat(tin.value)||0)+'&n='+Date.now()}
   img.onload=()=>{W=Math.min(720,img.naturalWidth);H=Math.round(W*img.naturalHeight/img.naturalWidth);cv.width=W;cv.height=H;defaults();msg.textContent='';draw()};
   img.onerror=()=>{msg.textContent='Could not load a frame from this clip.'};
@@ -154,7 +181,7 @@ function openLayout(c,video){
     else{let w=Math.max(p.x-r.x*W,W*0.06),h=w/A;if(r.y*H+h>H){h=H-r.y*H;w=h*A}if(r.x*W+w>W){w=W-r.x*W;h=w/A}r.w=w/W;r.h=h/H}
     draw()};
   cv.onpointerup=()=>{drag=null};
-  mode.onchange=()=>{L.mode=mode.value;sync();draw()};fit.onchange=()=>{L.game_fit=fit.value;draw()};
+  mode.onchange=()=>{L.mode=mode.value;sync();draw();renderCap()};fit.onchange=()=>{L.game_fit=fit.value;draw()};
   sp.oninput=()=>{L.split=sp.value/100;spl.textContent='Webcam height '+sp.value+'%';fixRect('facecam');fixRect('game');draw()};
   tb.onclick=loadFrame;close.onclick=()=>ov.remove();
   auto.onclick=async()=>{auto.disabled=true;msg.textContent='Looking for a face…';
@@ -164,11 +191,12 @@ function openLayout(c,video){
   pv.onclick=async()=>{pv.disabled=true;msg.textContent='Rendering preview…';
     const r=await fetch('/api/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:c.id,t:parseFloat(tin.value)||0,layout:layoutOut()})});
     pv.disabled=false;if(!r.ok){msg.textContent=await r.text();return}
-    pimg.src=URL.createObjectURL(await r.blob());msg.textContent=''};
+    pimg.src=URL.createObjectURL(await r.blob());pimg.style.visibility='visible';msg.textContent=''};
   save.onclick=async()=>{const r=await fetch('/api/layout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel:c.channel,layout:layoutOut()})});
     if(!r.ok){msg.textContent=await r.text();return}
     layouts[c.channel]=await r.json();msg.textContent='Saved. New clips use it automatically; press "Export clip" on an existing clip to re-render it.';load(true)};
-  sync();loadFrame()}
+  resetCap.onclick=()=>{C=null;renderCap()};
+  sync();renderCap();loadFrame()}
 document.getElementById('f').onchange=()=>render();document.getElementById('s').onchange=()=>render();
 document.getElementById('purge').onclick=async()=>{if(confirm('Permanently delete every trashed clip file?')){await post('/api/purge',{});load(true)}};
 loadLayouts().then(()=>load(true));setInterval(()=>load(false),10000);
@@ -196,6 +224,8 @@ class Store:
         out = []
         for p, m in self._metas():
             m["dir"] = p.parent.relative_to(self.root).as_posix()
+            if not m.get("description"):
+                m["description"] = suggest_description(m, self.cfg)
             out.append(m)
         return out
 
@@ -213,6 +243,19 @@ class Store:
             if not p:
                 return False
             m["status"] = status
+            _write_json(p, m)
+            return True
+
+    def set_description(self, cid: str, title: str, body: str) -> bool:
+        if len(title) > 300 or len(body) > 5000:
+            return False
+        with self.lock:
+            p, m = self.find(cid)
+            if not p:
+                return False
+            d = m.get("description") or suggest_description(m, self.cfg)
+            d["title"], d["body"] = title, body
+            m["description"] = d
             _write_json(p, m)
             return True
 
@@ -258,7 +301,8 @@ class Store:
             words = transcribe(src, self.cfg)                      # may raise CaptionsUnavailable
             if not words:
                 raise ValueError("no speech found in this clip, so there is nothing to caption")
-            ass = build_ass(words, start, end, vertical, self.cfg.caption_font, seam=(layout or {}).get("mode") == "split")
+            ass = build_ass(words, start, end, vertical, self.cfg.caption_font, seam=(layout or {}).get("mode") == "split",
+                            box=(layout or {}).get("captions"))
         name = f"{src.stem}_{int(start * 10)}-{int(end * 10)}{'_v' if vertical else ''}{'_cc' if captions else ''}.mp4"
         if not export_clip(src, p.parent / name, start, end, self.cfg, vertical, ass, layout):
             raise RuntimeError("ffmpeg failed; see the console running `review`")
@@ -410,6 +454,8 @@ def make_handler(store: Store):
                     return self._send(400, str(e).encode(), "text/plain")
                 except Exception as e:
                     return self._send(500, str(e).encode(), "text/plain")
+            elif path == "/api/describe":
+                ok = store.set_description(str(body.get("id")), str(body.get("title", "")), str(body.get("body", "")))
             elif path == "/api/purge":
                 store.purge()
                 ok = True

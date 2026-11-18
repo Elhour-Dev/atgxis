@@ -16,6 +16,7 @@ from typing import Callable
 from .chat import TwitchChat, YouTubeChat
 from .config import Config
 from .cutter import cut_clip, cut_draft, draft_offset, export_clip, loudness_jump, probe_duration
+from .describe import suggest as suggest_description
 from .detector import ChatEvent, Spike, SpikeDetector
 from .layout import LayoutStore
 from .recorder import Recorder
@@ -167,6 +168,7 @@ class ChannelWorker(threading.Thread):
                     "duration_s": round(dur, 1), "moment_s": round(moment, 1), "clip_len_s": c.clip_len_s,
                     "suggest_start_s": sug[0], "suggest_end_s": sug[1], "exports": [],
                     "spike": {k: v for k, v in asdict(sp).items() if k != "score"}}
+            meta["description"] = suggest_description(meta, c)
             tmp = out.with_suffix(".json.tmp")
             tmp.write_text(json.dumps(meta, indent=1, ensure_ascii=False), encoding="utf-8")
             tmp.replace(out.with_suffix(".clip.json"))
