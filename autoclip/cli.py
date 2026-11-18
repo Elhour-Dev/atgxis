@@ -74,6 +74,9 @@ def cmd_run(args) -> int:
     src = "config.toml" if (args.config or Path("config.toml").is_file()) else "built-in defaults (no config.toml found)"
     print(f"Settings: {src} | sensitivity: mult {cfg.mult}{' (eases to 1.8 on big chats)' if cfg.auto_mult else ''}, "
           f"min chatters {cfg.min_users}, audio assist {'on' if cfg.audio_assist else 'off'}")
+    if cfg.min_users >= 30:
+        print(f"NOTE: min chatters is {cfg.min_users:g}. Chat quieter than that can never trigger a clip, "
+              f"so spikes on a calm stretch are skipped. 6-15 is typical; set min_users in config.toml.")
     print(f"Clips: {Path(cfg.out_dir).resolve()}" + (f"  | finished clips also copied to: {cfg.export_dir}" if cfg.export_dir else "")
           + f"\nLog: {logfile}")
     stop = threading.Event()

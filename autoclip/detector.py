@@ -208,8 +208,11 @@ class SpikeDetector:
                     self.near_run += 1
                     if self.near_run == 4 and not self.near_flag:
                         self.near_flag = True
-                        self.notes.append(f"near-miss: chat {value / base:.1f}x normal (needed {thr / base:.1f}x)"
-                                          + (f", audio +{boost:.0f} dB" if boost >= 3 else ""))
+                        why = ""
+                        if thr == self.cfg.min_users:
+                            why = f" - bar set by min_users={self.cfg.min_users:g}, not by chat size"
+                        self.notes.append(f"near-miss: {value} chatters vs {base:.0f} normal ({value / base:.1f}x, needed {thr / base:.1f}x = {thr:.0f})"
+                                          + (f", audio +{boost:.0f} dB" if boost >= 3 else "") + why)
                 else:
                     self.near_run = 0
                     if value < thr * 0.6:

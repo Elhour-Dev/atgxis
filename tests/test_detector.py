@@ -203,6 +203,13 @@ def test_near_miss_is_reported_once_per_episode():
     assert d.pop_notes() == []                                                         # popped
 
 
+def test_near_miss_names_the_min_users_floor_when_it_sets_the_bar():
+    cfg = Config(min_users=250)                                                        # floor well above 2x of a ~100 chatter baseline
+    spikes, d = run_with_audio(cfg, rising(10, 300, 315, 2.3), lambda s: -30.0, 400)
+    notes = d.pop_notes()
+    assert spikes == [] and notes and "min_users=250" in notes[0], (spikes, notes)
+
+
 def test_audio_meter_measures_real_segments(tmp_path):
     import subprocess
     from autoclip.audio import mean_volume
