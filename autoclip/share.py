@@ -43,7 +43,7 @@ class Job:
 @dataclass
 class Result:
     ok: bool
-    status: str          # "done" | "opened" | "failed"
+    status: str          # "done" | "draft" (uploaded, you finish it in the app) | "opened" | "failed"
     message: str = ""
     url: str | None = None
 
@@ -81,6 +81,10 @@ class Provider:
     def configured(self) -> bool:
         return True
 
+    def problems(self, platform: str) -> str | None:
+        """Why this provider cannot post to `platform` right now (e.g. account not connected), or None."""
+        return None
+
     def publish(self, job: Job) -> Result:
         raise NotImplementedError
 
@@ -100,7 +104,7 @@ class AssistantProvider(Provider):
                                       "Caption is on your clipboard: paste it, attach the video, press Post.")
 
 
-PROVIDERS: dict[str, Provider] = {"assistant": AssistantProvider()}
+PROVIDERS: dict[str, Provider] = {"assistant": AssistantProvider()}     # publish.py adds "direct" (official APIs)
 
 
 def providers_info() -> list[dict]:
@@ -144,6 +148,9 @@ def run(store, req: ShareRequest) -> dict[str, dict]:
         done = (meta.get("shares") or {}).get(pl, {}).get("status") == "done"
         if done and not req.force:
             problems.append(f"{PLATFORMS[pl]['label']}: already posted (tick 'post again' to repeat)")
+        why = prov.problems(pl)
+        if why:
+            problems.append(why)
         jobs.append(Job(pl, video, title, text))
     if problems:                                               # nothing is posted if ANY platform fails validation
         raise ShareError(" | ".join(problems))

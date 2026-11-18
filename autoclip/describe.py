@@ -1,29 +1,78 @@
 """Post-text suggestions (title options + description with credit and hashtags) for each clip.
 
-This is rule-based, not AI: it reads what chat was spamming during the spike (KEKW = funny, WTF = shock, POG = hype ...)
-and fills a title template. It is a starting point you edit in the review page, not finished copy.
+Rule-based, no AI service and nothing leaves your PC. Titles are built from what is specific to THIS clip:
+  * what chat was spamming during the spike (the exact phrase, e.g. "NO WAY"), and which reaction it was (funny / shock / hype),
+  * how big the spike was (chatters at once, times normal),
+  * whether the streamer got loud,
+  * optionally what the streamer SAID (speech-to-text of the clip, when you press "Base on what's said" or after captions).
+Every call can return a fresh set (`seed`), never repeating titles already shown for the clip.
+It is a starting point you edit in the review page, not finished copy.
 """
 from __future__ import annotations
 
+import random
 import re
 import zlib
+from collections import Counter
 
 from .config import Config
 
 CATEGORIES = {
-    "funny": {"kekw", "lul", "lulw", "omegalul", "lmao", "lmfao", "haha", "hahaha", "icant", "dead", "rofl", "😂", "🤣", "💀"},
-    "shock": {"wtf", "omg", "wow", "nooo", "noooo", "bruh", "no way", "what", "huh", "monkas", "😳", "😱", "😭"},
+    "funny": {"kekw", "lul", "lulw", "omegalul", "lmao", "lmfao", "haha", "hahaha", "icant", "dead", "rofl", "😂", "🤣", "💀", "kekl", "pepelaugh"},
+    "shock": {"wtf", "omg", "wow", "nooo", "noooo", "bruh", "no way", "what", "huh", "monkas", "😳", "😱", "😭", "noway", "nowayyy", "ayo"},
     "hype": {"pog", "pogchamp", "poggers", "pogu", "pogs", "w", "ww", "www", "gg", "ggs", "clip", "clipit", "insane",
-             "clutch", "goat", "cracked", "🔥", "🐐"},
+             "clutch", "goat", "cracked", "🔥", "🐐", "letsgo", "lets go", "hype", "sheesh"},
 }
-TITLES = {
-    "funny": ["{n} had chat in TEARS 😂", "{n} said WHAT 💀", "Chat could not stop laughing at {n} 😂"],
-    "shock": ["{n} left chat SPEECHLESS 😳", "Nobody expected this from {n} 😱", "{n} did WHAT?! 😳"],
-    "hype": ["{n} just did the IMPOSSIBLE 🔥", "CHAT went CRAZY for {n} 🔥", "{n} is UNREAL 🔥"],
-    "default": ["The moment chat EXPLODED on {n}'s stream 👀", "{n}'s stream goes CRAZY 👀", "You had to be there: {n} 👀"],
+CATEGORY_TAGS = {"funny": ["funny", "lol", "comedy"], "shock": ["omg", "shocked", "unexpected"], "hype": ["hype", "insane", "goated"],
+                 "default": ["moments", "livestream"]}
+
+# every template is (needs, text). `needs` lists the fields that must be available: n=streamer, say=chat phrase, quote=streamer quote
+T = {
+    "chat": [
+        ("say", 'Chat spammed "{say}" at {n} 😭'), ("say", '{n} made all of chat type "{say}"'), ("say", 'Why is chat typing "{say}"? 👀'),
+        ("say", '"{say}" - chat, the second {n} did that'), ("say", 'The moment chat started spamming "{say}" 💀'),
+        ("say", '{n} broke chat: "{say}" x{count}'), ("say", 'Everybody in {n}\'s chat said "{say}" at once'),
+    ],
+    "speech": [
+        ("quote", '"{quote}" 😭 {n}'), ("quote", '{n}: "{quote}"'), ("quote", '{n} said "{quote}" and chat LOST it'),
+        ("quote", 'The way {n} said "{quote}" 💀'), ("quote", '"{quote}" - {n} live on stream 👀'),
+        ("quote", 'Chat could not believe {n} said "{quote}"'),
+    ],
+    "funny": [
+        ("n", "{n} had chat in TEARS 😂"), ("n", "{n} said WHAT 💀"), ("n", "Chat could not stop laughing at {n} 😂"),
+        ("n", "I cannot breathe, {n} is too funny 💀"), ("n", "{n} did it again 😭 chat is DEAD"), ("n", "This {n} moment is actually unfair 😂"),
+        ("n", "POV: you are in {n}'s chat right now 😂"), ("n", "{n} just ended chat with ONE line 💀"),
+    ],
+    "shock": [
+        ("n", "{n} left chat SPEECHLESS 😳"), ("n", "Nobody expected this from {n} 😱"), ("n", "{n} did WHAT?! 😳"),
+        ("n", "Wait for it... {n} 😳"), ("n", "Chat is in SHOCK after what {n} just did"), ("n", "{n} really just did that live 😱"),
+        ("n", "Bro what did {n} just do 😭"), ("n", "{n} shocked the whole stream"),
+    ],
+    "hype": [
+        ("n", "{n} just did the IMPOSSIBLE 🔥"), ("n", "CHAT went CRAZY for {n} 🔥"), ("n", "{n} is UNREAL 🔥"),
+        ("n", "This {n} play is INSANE 🐐"), ("n", "{n} cooked and chat KNOWS it 🔥"), ("n", "Clip it NOW: {n} 🔥"),
+        ("n", "{n} making history on stream 🐐"), ("n", "The whole chat stood up for {n} 🔥"),
+    ],
+    "default": [
+        ("n", "The moment chat EXPLODED on {n}'s stream 👀"), ("n", "{n}'s stream goes CRAZY 👀"), ("n", "You had to be there: {n} 👀"),
+        ("n", "This is why people watch {n} 👀"), ("n", "{n} had no idea what was coming 👀"), ("n", "Something just happened on {n}'s stream"),
+    ],
+    "big": [
+        ("peak", "{peak} people typed at once in {n}'s chat 🤯"), ("ratio", "{n}'s chat went {ratio}x louder in seconds 🤯"),
+        ("peak", "{peak} chatters, one reaction: {n} 👀"),
+    ],
+    "loud": [
+        ("n", "{n} SCREAMED and chat went insane 🔊"), ("n", "The loudest moment of {n}'s stream 🔊"), ("n", "{n} lost it on stream 🔊"),
+    ],
+    "hook": [
+        ("n", "You will not believe what {n} just did"), ("n", "This is why chat is obsessed with {n}"),
+        ("n", "I can't believe {n} did this live"), ("n", "Watch till the end: {n} 👀"), ("n", "{n} clip of the day 🎬"),
+    ],
 }
-CATEGORY_TAGS = {"funny": ["funny", "lol"], "shock": ["omg", "shocked"], "hype": ["hype", "insane"], "default": ["moments"]}
+HOOK_BODY = ["Wait for it...", "Watch till the end 👀", "Chat went crazy 😭", "You had to be there.", "Turn the sound on 🔊", "This one is a lot."]
 _TOKEN = re.compile(r"[^\W_]+|[^\w\s]", re.UNICODE)
+_BAD = re.compile(r"\b(fuck\w*|shit\w*|bitch\w*|nigg\w*|fag\w*|cunt|retard\w*|rape\w*|kill yourself|kys)\b", re.I)
+_SKIP_MSG = re.compile(r"^(\W*|[a-z]{1,2}|[+\-]\d+|\d+)$", re.I)
 
 
 def classify(top: list) -> str:
@@ -43,17 +92,131 @@ def display_name(channel: str, cfg: Config) -> str:
     return names.get(channel.lower()) or channel[:1].upper() + channel[1:]
 
 
-def suggest(meta: dict, cfg: Config) -> dict:
-    """{'title': best title, 'alts': [3 titles], 'body': credit line + hashtags, 'category': ...}"""
-    cat = classify((meta.get("spike") or {}).get("top"))
-    name = display_name(str(meta.get("channel", "")), cfg)
-    alts = [t.format(n=name) for t in TITLES[cat]]
-    k = zlib.crc32(str(meta.get("id", "")).encode()) % len(alts)       # different clips start on different titles
-    alts = alts[k:] + alts[:k]
+def chat_phrase(top: list) -> tuple[str | None, int]:
+    """The most-spammed message that reads as a phrase (not a single letter, a number or a bot command)."""
+    best, n = None, 0
+    for text, count in top or []:
+        t = re.sub(r"\s+", " ", str(text)).strip()
+        if len(t) < 3 or len(t) > 28 or _SKIP_MSG.match(t) or t.startswith(("!", "@", "http")) or _BAD.search(t):
+            continue
+        if int(count) > n:
+            best, n = t, int(count)
+    if best and best.isupper() is False and len(best.split()) <= 2:
+        best = best.upper()                              # "no way" -> "NO WAY": reads as chat spam
+    return best, n
+
+
+def best_quote(words: list, lo: float, hi: float, moment: float) -> str | None:
+    """A short, punchy sentence the streamer said near the moment (from the transcript words)."""
+    ws = [w for w in words if w[2] > lo and w[1] < hi]
+    if len(ws) < 3:
+        return None
+    sents, cur = [], []
+    for w in ws:
+        cur.append(w)
+        if re.search(r"[.!?]$", w[0]) or len(cur) >= 9:
+            sents.append(cur)
+            cur = []
+    if cur:
+        sents.append(cur)
+    best, score = None, -1.0
+    for s in sents:
+        text = " ".join(x[0] for x in s).strip(" ,;:-")
+        n = len(s)
+        if n < 3 or n > 10 or _BAD.search(text):
+            continue
+        mid = (s[0][1] + s[-1][2]) / 2
+        sc = 3 - abs(mid - moment) / 8 + (1.5 if text.endswith(("!", "?")) else 0) + (1 if 4 <= n <= 7 else 0)
+        if sc > score:
+            best, score = text, sc
+    if not best:
+        return None
+    best = re.sub(r"[.,;:]+$", "", best)
+    return best[0].upper() + best[1:] if best else None
+
+
+def features(meta: dict, cfg: Config, words: list | None = None, window: tuple[float, float] | None = None) -> dict:
+    sp = meta.get("spike") or {}
+    top = sp.get("top") or []
+    say, count = chat_phrase(top)
+    base = float(sp.get("baseline") or 0) or 1.0
+    peak = int(sp.get("peak") or 0)
+    quote = None
+    if words:
+        lo, hi = window or (meta.get("suggest_start_s", 0), meta.get("suggest_end_s", meta.get("duration_s", 0)))
+        quote = best_quote(words, lo, hi, float(meta.get("moment_s", (lo + hi) / 2)))
+    return {"n": display_name(str(meta.get("channel", "")), cfg), "cat": classify(top), "say": say, "count": count, "quote": quote,
+            "peak": peak, "ratio": round(peak / base, 1) if peak and base else 0,
+            "loud": (meta.get("loudness_jump_db") or 0) >= 6}
+
+
+def _fits(need: str, f: dict) -> bool:
+    if need == "n":
+        return True
+    if need in ("peak", "ratio"):
+        return (f["peak"] >= 25 and f["ratio"] >= 2.5)
+    return bool(f.get(need))
+
+
+def candidates(f: dict) -> list[tuple[str, str]]:
+    """[(family, title)] for every template this clip has the data for."""
+    fams = ["speech", "chat", f["cat"], "big", "hook"] + (["loud"] if f["loud"] else [])
+    out = []
+    for fam in fams:
+        for need, tpl in T[fam]:
+            if _fits(need, f):
+                title = tpl.format(n=f["n"], say=f["say"] or "", quote=f["quote"] or "", count=f["count"], peak=f["peak"], ratio=f["ratio"])
+                if len(title) <= 95:
+                    out.append((fam, title))
+    return out
+
+
+def pick(f: dict, rng: random.Random, seen: set[str], k: int = 6) -> list[str]:
+    """k varied titles: at most two per family, clip-specific families first, never one already shown."""
+    cands = [c for c in candidates(f) if c[1] not in seen]
+    rng.shuffle(cands)
+    prio = {"speech": 0, "chat": 1, f["cat"]: 2, "loud": 3, "big": 4, "hook": 5}
+    cands.sort(key=lambda c: prio.get(c[0], 9) + rng.random() * 1.6)      # specific first, but never the same order twice
+    out, per = [], Counter()
+    for fam, title in cands:
+        if per[fam] < 2 and title not in out:
+            out.append(title)
+            per[fam] += 1
+        if len(out) == k:
+            break
+    for fam, title in cands:                              # not enough variety: fill with whatever is left
+        if len(out) >= k:
+            break
+        if title not in out:
+            out.append(title)
+    return out
+
+
+def hashtags(f: dict, meta: dict, cfg: Config) -> list[str]:
     chan = re.sub(r"\W", "", str(meta.get("channel", "")).lower())
-    tags = list(dict.fromkeys([chan, *CATEGORY_TAGS[cat], *cfg.hashtags]))[:9]
+    emote = re.sub(r"\W", "", (f["say"] or "").lower()) if f["say"] and len(f["say"].split()) == 1 else ""
+    tags = [chan, *CATEGORY_TAGS[f["cat"]], *([emote] if emote and len(emote) <= 14 else []), *cfg.hashtags]
+    return list(dict.fromkeys(t.lstrip("#") for t in tags if t))[:9]
+
+
+def body_for(f: dict, meta: dict, cfg: Config, rng: random.Random) -> str:
     lines = []
+    lead = f'"{f["quote"]}"' if f["quote"] else rng.choice(HOOK_BODY)
+    lines.append(lead)
     if cfg.credit_line and meta.get("source_url"):
-        lines.append(f"🎥 Clip from {name}: {meta['source_url']}")
-    lines.append(" ".join("#" + t.lstrip("#") for t in tags if t))
-    return {"title": alts[0], "alts": alts, "body": "\n\n".join(lines), "category": cat}
+        lines.append(f"🎥 Clip from {f['n']}: {meta['source_url']}")
+    lines.append(" ".join("#" + t for t in hashtags(f, meta, cfg)))
+    return "\n\n".join(lines)
+
+
+def suggest(meta: dict, cfg: Config, words: list | None = None, window: tuple[float, float] | None = None,
+            seed: int = 0, seen: list[str] | None = None) -> dict:
+    """{'title', 'alts' (6 fresh titles), 'body', 'category', 'seen' (every title shown so far), 'used_speech': bool}.
+    Different `seed` (and the `seen` list) give different titles; the same clip + seed always gives the same ones."""
+    f = features(meta, cfg, words, window)
+    rng = random.Random(zlib.crc32(f"{meta.get('id', '')}:{seed}".encode()))
+    seen_set = set(seen or [])
+    alts = pick(f, rng, seen_set) or pick(f, rng, set())      # everything used up: start over rather than return nothing
+    shown = list(dict.fromkeys([*(seen or []), *alts]))[-60:]
+    return {"title": alts[0], "alts": alts, "body": body_for(f, meta, cfg, rng), "category": f["cat"], "seed": seed,
+            "seen": shown, "used_speech": bool(f["quote"]), "chat_phrase": f["say"]}

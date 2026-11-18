@@ -85,26 +85,31 @@ def _crop(r: dict) -> str:
     return (f"crop=trunc(iw*{r['w']}/2)*2:trunc(ih*{r['h']}/2)*2:trunc(iw*{r['x']}):trunc(ih*{r['y']})")
 
 
-def _cover(r: dict | None, w: int, h: int) -> str:
-    return (f"{_crop(r)}," if r else "") + f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}"
+SCALE = "flags=lanczos+accurate_rnd"       # much sharper than the default bicubic scaler
 
 
-def chain(layout: dict | None) -> str:
+def _cover(r: dict | None, w: int, h: int, sharpen: float = 0.0) -> str:
+    amount = max(0.0, min(float(sharpen), 1.5))               # luma-only unsharp mask; 0 = off (it did not improve measured quality)
+    return ((f"{_crop(r)}," if r else "") + f"scale={w}:{h}:force_original_aspect_ratio=increase:{SCALE},crop={w}:{h}"
+            + (f",unsharp=5:5:{amount:.2f}:5:5:0.0" if amount > 0 else ""))
+
+
+def chain(layout: dict | None, sharpen: float = 0.0) -> str:
     """ffmpeg filter_complex text from input [0:v] to output label [v]: 1080x1920."""
     mode = (layout or {}).get("mode", "blur")
     if mode == "crop":
-        return f"[0:v]scale=-2:{OUT_H},crop={OUT_W}:{OUT_H}[v]"
+        return f"[0:v]scale=-2:{OUT_H}:{SCALE},crop={OUT_W}:{OUT_H}[v]"
     if mode != "split":
-        return (f"[0:v]split[a][b];[a]scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase,crop={OUT_W}:{OUT_H},boxblur=25:5[bg];"
-                f"[b]scale={OUT_W}:-2[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2[v]")
+        return (f"[0:v]split[a][b];[a]scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase:{SCALE},crop={OUT_W}:{OUT_H},boxblur=25:5[bg];"
+                f"[b]scale={OUT_W}:-2:{SCALE}[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2[v]")
     lay = validate(layout)
     h1, h2 = heights(lay["split"])
-    top = f"[a]{_cover(lay['facecam'], OUT_W, h1)}[top]"
+    top = f"[a]{_cover(lay['facecam'], OUT_W, h1, sharpen)}[top]"
     if lay["game_fit"] == "blur":      # whole gameplay area visible, blurred fill above and below
         g = lay["game"]
         fg = f"{_crop(g)}," if g else ""
-        bottom = (f"[b]split[b1][b2];[b1]scale={OUT_W}:{h2}:force_original_aspect_ratio=increase,crop={OUT_W}:{h2},boxblur=25:5[bg];"
-                  f"[b2]{fg}scale={OUT_W}:-2[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2[bot]")
+        bottom = (f"[b]split[b1][b2];[b1]scale={OUT_W}:{h2}:force_original_aspect_ratio=increase:{SCALE},crop={OUT_W}:{h2},boxblur=25:5[bg];"
+                  f"[b2]{fg}scale={OUT_W}:-2:{SCALE}[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2[bot]")
     else:
         bottom = f"[b]{_cover(lay['game'] or default_game_rect(lay['split']), OUT_W, h2)}[bot]"
     return f"[0:v]split[a][b];{top};{bottom};[top][bot]vstack=inputs=2[v]"

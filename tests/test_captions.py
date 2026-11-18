@@ -97,7 +97,7 @@ def test_describe_reads_the_chat_reaction():
     cfg = Config(display_names={"kaicenat": "Kai Cenat"})
     m = {"id": "kaicenat/s/c1", "channel": "kaicenat", "source_url": "https://www.twitch.tv/kaicenat", "spike": {"top": [["kekw", 9]]}}
     d = suggest(m, cfg)
-    assert "Kai Cenat" in d["title"] and len(d["alts"]) == 3 and d["title"] in d["alts"]
+    assert "Kai Cenat" in d["title"] and len(d["alts"]) == 6 and d["title"] in d["alts"]
     assert "twitch.tv/kaicenat" in d["body"] and "#kaicenat" in d["body"] and "#funny" in d["body"] and "#fyp" in d["body"]
     assert "Clip from" not in suggest(m, Config(credit_line=False))["body"]
     firsts = {suggest({**m, "id": f"kaicenat/s/c{i}"}, cfg)["title"] for i in range(12)}
@@ -187,7 +187,7 @@ def test_whisper_voice_filter_is_retried_without_vad(tmp_path, monkeypatch):
     calls = _fake_whisper(monkeypatch, lambda vad: [] if vad else [("finally", 0.5, 1.0)])
     clip = _clip_with_audio(tmp_path)
     assert captions.transcribe(clip, Config()) == [("finally", 0.5, 1.0)]
-    assert calls == [True, False]
+    assert calls[0] is True and calls[-1] is False                  # strict pass, relaxed pass, then no voice filter at all
 
 
 def test_empty_transcript_is_never_cached_so_a_clip_is_not_stuck_forever(tmp_path, monkeypatch):
@@ -210,8 +210,8 @@ def test_export_explains_when_trim_misses_the_speech_and_shows_ffmpeg_errors(tmp
             "created": "x", "source_url": "x", "spike": {}}
     (tmp_path / "c.clip.json").write_text(json.dumps(meta))
     store = review.Store(tmp_path, Config(preset="ultrafast"))
-    monkeypatch.setattr(review, "transcribe", lambda p, c: [("hello", 2.0, 2.6)])
-    with pytest.raises(ValueError, match=r"nobody speaks between 0.0s and 1.0s.*2.0-2.6s"):
+    monkeypatch.setattr(review, "transcribe", lambda p, c, a=None, b=None: [("hello", 2.0, 2.6)])
+    with pytest.raises(ValueError, match=r"no speech was recognised between 0.0s and 1.0s"):
         store.export("ch/s/c", 0.0, 1.0, True, True)                                  # speech is at 2.0s, trim is 0-1s
     assert store.export("ch/s/c", 0.0, 2.9, True, True)                               # trim covering it works
     monkeypatch.setattr(review, "build_ass", lambda *a, **k: "garbage that is not a subtitle file")

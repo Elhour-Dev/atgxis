@@ -34,43 +34,131 @@ def decode_audio(path: Path):
     return np.frombuffer(r.stdout, dtype=np.float32)
 
 
-def _run_model(model, audio, vad: bool) -> list[Word]:
-    segs, _ = model.transcribe(audio, word_timestamps=True, vad_filter=vad, condition_on_previous_text=False, beam_size=5)
+SR = 16000
+_STRICT: dict = {}                                    # faster-whisper defaults + the voice-activity filter
+_LENIENT: dict = {"no_speech_threshold": None, "log_prob_threshold": None}   # never skip a block as "no speech"
+
+
+def _run_model(model, audio, vad: bool, lenient: bool = False, language: str | None = None) -> list[Word]:
+    kw = dict(word_timestamps=True, vad_filter=vad, condition_on_previous_text=False, beam_size=5,
+              language=language or None, **(_LENIENT if lenient else _STRICT))
+    if vad and lenient:
+        kw["vad_parameters"] = {"threshold": 0.25, "min_silence_duration_ms": 700, "speech_pad_ms": 400}
+    try:
+        segs, _ = model.transcribe(audio, **kw)
+    except TypeError:                                 # an older faster-whisper without one of the optional arguments
+        kw.pop("vad_parameters", None)
+        segs, _ = model.transcribe(audio, **kw)
     return [(w.word.strip(), float(w.start), float(w.end)) for s in segs for w in (s.words or []) if w.word.strip()]
 
 
-def transcribe(path: Path, cfg: Config) -> list[Word]:
-    """Word-level transcript with timestamps, cached next to the clip as <clip>.words.json (only when speech was found)."""
+def loud_seconds(audio, floor_db: float = -48.0) -> list[bool]:
+    """Per second of audio: is there anything audible (above `floor_db`)? Used to tell real silence from missed speech."""
+    import numpy as np
+    n = len(audio) // SR
+    if n <= 0:
+        return []
+    rms = np.sqrt(np.mean(audio[: n * SR].reshape(n, SR) ** 2, axis=1) + 1e-12)
+    return [bool(20 * np.log10(r) > floor_db) for r in rms]
+
+
+def find_gaps(words: list[Word], length_s: float, loud: list[bool], min_gap: float = 6.0) -> list[tuple[float, float]]:
+    """Stretches of >= min_gap seconds with no recognised word although the audio is audible: Whisper probably skipped them."""
+    marks = [0.0] + sorted(x for w in words for x in (w[1], w[2])) + [length_s]
+    gaps = []
+    for lo, hi in zip(marks, marks[1:]):
+        if hi - lo >= min_gap:
+            seconds = [loud[i] for i in range(int(lo), min(int(hi) + 1, len(loud)))]
+            if seconds and sum(seconds) >= 0.5 * len(seconds):
+                gaps.append((lo, hi))
+    return gaps
+
+
+def _merge(words: list[Word], extra: list[Word]) -> list[Word]:
+    out = sorted(words + extra, key=lambda w: (w[1], w[2]))
+    clean: list[Word] = []
+    for w in out:                                     # drop duplicates produced by overlapping retries
+        if clean and w[0].lower() == clean[-1][0].lower() and abs(w[1] - clean[-1][1]) < 0.4:
+            continue
+        clean.append(w)
+    return clean
+
+
+def recognise(model, audio, language: str | None = None) -> list[Word]:
+    """Best-effort transcript of one audio array: normal pass, then fill every audible-but-empty stretch with relaxed settings."""
+    words = _run_model(model, audio, vad=True, language=language)
+    length = len(audio) / SR
+    loud = loud_seconds(audio)
+    if not words:
+        log.info("captions: no speech with the strict pass, retrying relaxed")
+        words = _run_model(model, audio, vad=True, lenient=True, language=language) or \
+            _run_model(model, audio, vad=False, lenient=True, language=language)
+    for rnd in range(2):                                # two rounds are plenty: relaxed, then no voice filter at all
+        gaps = find_gaps(words, length, loud)
+        if not gaps:
+            break
+        extra: list[Word] = []
+        for lo, hi in gaps:
+            a, b = max(lo - 0.5, 0.0), min(hi + 0.5, length)
+            chunk = audio[int(a * SR): int(b * SR)]
+            log.info("captions: filling %.1f-%.1fs, audible but no words yet", lo, hi)
+            got = _run_model(model, chunk, vad=(rnd == 0), lenient=True, language=language)
+            extra += [(t, x + a, y + a) for t, x, y in got if lo - 0.2 <= x + a <= hi + 0.2]
+        if not extra:
+            continue
+        words = _merge(words, extra)
+    return words
+
+
+def transcribe(path: Path, cfg: Config, start: float | None = None, end: float | None = None) -> list[Word]:
+    """Word-level transcript with timestamps relative to the START OF THE FILE.
+    With start/end only that part (plus 1.5 s of margin) is transcribed: faster, and Whisper cannot skip it because of
+    some other minute. Results are cached next to the clip as <clip>.words.json (a list of windows)."""
     cache = path.with_suffix(".words.json")
-    if cache.exists():
-        try:
-            words = [tuple(w) for w in json.loads(cache.read_text(encoding="utf-8"))]
-            if words:
-                return words
-        except (OSError, ValueError):
-            pass
-        cache.unlink(missing_ok=True)                  # an empty/corrupt cache from an earlier attempt must not stick forever
+    lo_req = 0.0 if start is None else max(start - 1.5, 0.0)
+    hi_req = 1e9 if end is None else end + 1.5
+    windows = _read_cache(cache)
+    for w in windows:
+        if w["lo"] <= lo_req + 0.05 and w["hi"] >= min(hi_req, w.get("len", hi_req)) - 0.05 and w["words"]:
+            return [tuple(x) for x in w["words"]]
     try:
         from faster_whisper import WhisperModel
     except ImportError as e:
         raise CaptionsUnavailable("Captions need:  pip install faster-whisper") from e
     audio = decode_audio(path)                         # fail fast (no audio track) before loading a large model
+    total = len(audio) / SR
+    lo, hi = lo_req, min(hi_req, total)
     key = (cfg.whisper_model, cfg.whisper_device)
     if key not in _MODEL:
         try:
             _MODEL[key] = WhisperModel(cfg.whisper_model, device=cfg.whisper_device, compute_type="auto")
         except Exception:
             _MODEL[key] = WhisperModel(cfg.whisper_model, device="cpu", compute_type="int8")
-    model = _MODEL[key]
-    words = _run_model(model, audio, vad=True)
+    part = audio[int(lo * SR): int(hi * SR)]
+    words = [(t, a + lo, b + lo) for t, a, b in recognise(_MODEL[key], part, getattr(cfg, "whisper_language", "") or None)]
     if not words:
-        # The voice-activity filter can wipe out real speech over loud game audio / music: retry without it.
-        log.info("captions: no speech with the voice filter, retrying without it for %s", path.name)
-        words = _run_model(model, audio, vad=False)
-    if not words:
-        raise CaptionsUnavailable("no speech could be detected in this clip (music, game sound or silence only)")
-    cache.write_text(json.dumps(words, ensure_ascii=False), encoding="utf-8")
+        raise CaptionsUnavailable("no speech could be detected in this part of the clip (music, game sound or silence only)")
+    windows = [w for w in windows if not (lo <= w["lo"] and w["hi"] <= hi)] + [{"lo": lo, "hi": hi, "len": total, "words": words}]
+    cache.write_text(json.dumps(windows, ensure_ascii=False), encoding="utf-8")
     return words
+
+
+def cached_words(path: Path) -> list[Word]:
+    """Every word already transcribed for this clip (from earlier caption exports). Free: no model run."""
+    seen: dict[tuple, Word] = {}
+    for w in _read_cache(path.with_suffix(".words.json")):
+        for t, a, b in w["words"]:
+            seen[(round(a, 2), t)] = (t, a, b)
+    return sorted(seen.values(), key=lambda w: w[1])
+
+
+def _read_cache(cache: Path) -> list[dict]:
+    try:
+        data = json.loads(cache.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    # the old format was a plain list of words; it came from the flawed whole-file pass, so it is discarded
+    return [w for w in data if isinstance(w, dict) and {"lo", "hi", "words"} <= set(w)] if isinstance(data, list) else []
 
 
 def words_in_window(words: list[Word], start: float, end: float) -> list[Word]:

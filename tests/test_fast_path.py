@@ -119,7 +119,7 @@ def test_review_store_and_http_export(tmp_path, monkeypatch):
     assert post("/api/export", {"id": "ch/s/c1", "start": 0, "end": 5000})[0] == 400       # longer than the draft
     code, msg = post("/api/export", {"id": "ch/s/c1", "start": 1, "end": 6, "captions": True})
     assert code == 400 and "faster-whisper" in msg                                          # clear message, no crash
-    monkeypatch.setattr(review, "transcribe", lambda p, c: WORDS)                           # pretend whisper ran
+    monkeypatch.setattr(review, "transcribe", lambda p, c, a=None, b=None: WORDS)                           # pretend whisper ran
     code, body = post("/api/export", {"id": "ch/s/c1", "start": 0, "end": 6, "vertical": True, "captions": True})
     assert code == 200 and "_cc" in body
     exports = json.loads((tmp_path / "d.clip.json").read_text())["exports"]

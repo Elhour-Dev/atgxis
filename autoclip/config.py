@@ -51,8 +51,9 @@ class Config:
     lead_in_s: int = 5          # plus this much lead-in before the moment
     dup_overlap: float = 0.6    # skip a clip that overlaps an existing one by this much
     encoder: str = "auto"       # "auto" = NVIDIA/Intel/AMD hardware encoder if it really works, else CPU (x264)
-    preset: str = "veryfast"    # CPU encoder speed/quality
-    crf: int = 20               # quality (lower = better/larger)
+    preset: str = "medium"      # CPU encoder speed/quality (exports are one-off, so quality beats speed)
+    crf: int = 17               # quality (lower = better/larger; 17 is visually lossless for social media)
+    sharpen: float = 0.0        # 0 = off. 0.3-0.8 sharpens the enlarged webcam panel (try it if your webcam looks soft)
     out_fps: int = 30           # social platforms use 30; halves encode time vs 60. 0 = keep source fps
     normalize_audio: bool = True  # loudness-normalize to social-media level (-14 LUFS)
     low_priority: bool = True   # encode at below-normal priority so your game / stream never stutters
@@ -63,10 +64,11 @@ class Config:
     # --- captions (optional: pip install faster-whisper) ---
     whisper_model: str = "small"    # tiny/base/small/medium; "small" is a good speed/accuracy balance
     whisper_device: str = "auto"    # auto picks the GPU if CUDA is available
+    whisper_language: str = ""      # "" = detect automatically; "en", "fr", ... forces a language (more reliable if you know it)
     caption_font: str = "Arial"
 
     # --- recording ---
-    quality: str = "720p60,720p,480p,best"   # lower than source = less disk, no CPU cost (stream copy)
+    quality: str = "best"       # the stream's top quality (usually 1080p60). Recording is stream copy: no CPU cost, ~0.7 GB per 10 min
     segment_s: int = 4
     buffer_s: int = 600         # rolling buffer length on disk
     buffer_dir: str = ""        # default: system temp folder
@@ -81,6 +83,8 @@ class Config:
 
     bots: list[str] = field(default_factory=lambda: list(DEFAULT_BOTS))
     hype_terms: list[str] = field(default_factory=lambda: list(DEFAULT_HYPE))
+
+OLD_QUALITY = "720p60,720p,480p,best"
 
 
 def load(path: str | Path | None, auto: bool = True) -> Config:
@@ -99,4 +103,6 @@ def load(path: str | Path | None, auto: bool = True) -> Config:
         raise ValueError(f"unknown setting(s) in {path}: {', '.join(sorted(unknown))}")
     for k, v in data.items():
         setattr(cfg, k, v)
+    if cfg.quality.replace(" ", "") == OLD_QUALITY:          # copied from an old config.example.toml: that cap made every clip blurry
+        cfg.quality = "best"
     return cfg

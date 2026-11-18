@@ -49,9 +49,9 @@ def _vcodec(cfg: Config) -> list[str]:
     enc = pick_encoder(cfg)
     if enc == "libx264":
         return ["-c:v", "libx264", "-preset", cfg.preset, "-crf", str(cfg.crf), "-pix_fmt", "yuv420p"]
-    q = str(cfg.crf + 2)
+    q = str(cfg.crf + 1)
     if enc == "h264_nvenc":
-        return ["-c:v", enc, "-preset", "p5", "-rc", "vbr", "-cq", q, "-b:v", "0", "-pix_fmt", "yuv420p"]
+        return ["-c:v", enc, "-preset", "p6", "-rc", "vbr", "-cq", q, "-b:v", "0", "-pix_fmt", "yuv420p"]
     if enc == "h264_qsv":
         return ["-c:v", enc, "-global_quality", q, "-pix_fmt", "nv12"]
     if enc == "h264_amf":
@@ -61,7 +61,7 @@ def _vcodec(cfg: Config) -> list[str]:
 
 def _acodec(cfg: Config) -> list[str]:
     af = ["-af", "loudnorm=I=-14:TP=-1.5:LRA=11"] if cfg.normalize_audio else []
-    return [*af, "-c:a", "aac", "-b:a", "192k", "-ar", "48000"]
+    return [*af, "-c:a", "aac", "-b:a", "256k", "-ar", "48000"]
 
 
 def _low_priority(cmd: list[str], cfg: Config) -> tuple[list[str], dict]:
@@ -110,7 +110,7 @@ def _filters(cfg: Config, vertical: bool, ass: str | None, layout: dict | None =
     if not vertical:
         return ["-vf", ",".join(post)] if post else []
     base = layout if layout else {"mode": cfg.vertical_mode}
-    graph = lay.chain(base)
+    graph = lay.chain(base, getattr(cfg, "sharpen", 0.0))
     if post:
         graph += f";[v]{','.join(post)}[vo]"
         return ["-filter_complex", graph, "-map", "[vo]", "-map", "0:a?"]
@@ -154,6 +154,16 @@ def draft_offset(sel: list[Segment], wall: float) -> float:
             return acc + (wall - s.t0)
         acc += s.t1 - s.t0
     return acc
+
+
+def probe_size(path: Path) -> tuple[int, int] | None:
+    """(width, height) of the first video stream."""
+    r = _run([ffprobe_exe(), "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x", str(path)], 30)
+    try:
+        w, h = r.stdout.strip().split("x")[:2]
+        return int(w), int(h)
+    except ValueError:
+        return None
 
 
 def probe_duration(path: Path) -> float | None:

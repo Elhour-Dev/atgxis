@@ -17,7 +17,7 @@ reaction_lag_s = 8      # chat reacts ~8 s after the moment; raise it if the 30 
 # whisper_model = "small"   # tiny / base / small / medium
 
 # --- quality / speed ---
-quality = "720p60,720p,480p,best"   # lower quality = less disk; clipping does not re-encode the buffer
+quality = "best"                    # record the stream at its top quality (sharper clips). "720p60,720p,best" saves disk but looks soft
 encoder = "libx264"                 # "h264_nvenc" (NVIDIA), "h264_qsv" (Intel), "h264_amf" (AMD) = faster cuts
 vertical = "on_demand"              # "auto" also exports a 9:16 of every suggested trim (uses CPU/GPU)
 
@@ -33,6 +33,7 @@ max_clips_gb = 20
 # credit_line = true                       # "Clip from <streamer>: <link>" in the description
 # display_names = { kaicenat = "Kai Cenat" }
 
+# sharpen = 0.0              # 0 = off; 0.3-0.8 sharpens the webcam panel of vertical clips
 # --- extra signals ---
 # audio_assist = true        # loud moments make chat spikes easier to catch (never fires alone)
 # audio_boost_db = 8.0

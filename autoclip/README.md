@@ -76,11 +76,24 @@ Saved in your user settings (`%APPDATA%\autoclip\settings.json`), so `git pull` 
 Explorer.
 
 ## Sharing to TikTok / YouTube Shorts / Instagram Reels
-Export a clip (vertical, trimmed, captions as you like), open **Share**, tick the platforms, **Share selected...**. You always get a
-confirmation first; nothing is opened or posted before you press OK. Safety rules: only exported clips can be shared, one invalid
-platform blocks the whole request, an already-posted platform is not posted again unless you tick "post again", and each result is
-recorded. The built-in **Share assistant** opens each platform's upload page, selects the file and copies the caption; you press Post.
-Automatic posting needs an account/API route (see the project notes) and plugs into the same panel.
+Export a clip (vertical, trimmed, captions as you like), open **Share**, pick a **method**, tick the platforms, **Share selected...**.
+You always get a confirmation first; nothing is opened or uploaded before you press OK. Safety rules: only exported clips can be shared,
+one invalid or not-connected platform blocks the whole request (nothing is uploaded), an already-posted platform is not posted again
+unless you tick "post again", and each result is recorded.
+
+* **Share assistant** (no setup): opens each platform's upload page, selects the file, copies the caption; you press Post.
+* **Post directly to my connected accounts** (free, official APIs): uploads for you. Set up once under **🔗 Accounts** (about 5 minutes
+  per platform, instructions are inside that window). Logins are kept in `%APPDATA%\autoclip\accounts.json` on your PC only.
+
+What each platform really allows (so there are no surprises):
+| | what happens | catch |
+|---|---|---|
+| **YouTube** | uploaded and published as a Short | Google can lock uploads from a brand-new API project to *private* until it audits the project; the app detects this and tells you, with a link to publish it in Studio. Set the consent screen to "In production" or the login expires after 7 days. Roughly 6 uploads/day on the default quota. |
+| **Instagram** | published as a Reel | needs a Professional (Creator/Business) account and a free Meta developer app; works on your own account without Meta app review. |
+| **TikTok** | **draft** in your TikTok inbox (you open the app and press Post) or a direct post | TikTok only allows *private* direct posts for apps it has not audited, so Draft is the default. TikTok setup is the least predictable of the three; the Share assistant is always there as a fallback. |
+
+These three uploaders were built from the platforms' published API behaviour and tested against a simulated server, not against your live
+accounts. If one of them reports an error, the message says why; use the Share assistant for that platform and tell me the message.
 
 ## Vertical clips: webcam on top, gameplay below (Reels / TikTok / Shorts)
 Every clip is exported **automatically as a ready 1080x1920, 30 fps, exactly 30 s video**. Until you teach it where a streamer's
@@ -98,10 +111,22 @@ Other options: whole screen on a blurred background, plain center crop, adjustab
 Without a saved box, captions sit on the line between webcam and gameplay.
 
 ## Post text (title + description) for every clip
-Open **Post text** on any clip: you get a suggested title (press ↻ for other options), plus a description with a credit line to
-the streamer and hashtags. Edit freely (it autosaves) and press **Copy title + description**. These are rule-based suggestions
-built from what chat was spamming (KEKW = funny, WTF = shock, POG = hype), not AI-written copy: treat them as a starting point.
+Open **Post text** on any clip. Titles are built from what is specific to that clip: the phrase chat was spamming ("NO WAY", "KEKW"),
+how big the spike was, whether the streamer got loud, and which reaction it was (funny / shock / hype). Buttons:
+**↻ Other title** steps through six options, and fetches a brand-new set when they run out; **🔄 New ideas** makes a new set right away
+(titles already shown for that clip are never repeated); **🎧 From what is said** listens to the clip (needs `faster-whisper`, see Captions)
+and quotes the streamer's own words in the titles. The description gets a hook line (or the quote), a credit line and hashtags; text you
+edited yourself is never overwritten. These are rule-based suggestions, not AI-written copy.
 Set nicer names in `config.toml`:  `display_names = { kaicenat = "Kai Cenat" }`,  `hashtags = ["fyp", "gaming"]`,  `credit_line = false`.
+
+## Video quality
+The biggest factor is the quality the stream is **recorded** at: the default is now the stream's best (usually 1080p60), because a webcam
+is a small part of the screen and gets enlarged ~2-3x in a vertical clip. Measured on a test pattern: recording at 1080p instead of 720p
+raised the sharpness score of the webcam panel from 0.839 to 0.887 (SSIM). Exports use x264 `medium`, CRF 17. Each card shows the source
+resolution (clips recorded at 720p show a warning), and the layout editor shows how much each box is enlarged ("2.1x (ok)"; red above 2x:
+make the box bigger). New layouts show the whole gameplay frame (nothing cut off) instead of a tight crop; you can switch back in the editor.
+Optional `sharpen = 0.5` in `config.toml` sharpens the webcam panel (off by default: it did not improve the measured score, judge by eye).
+If you copied the old `config.example.toml`, the old `quality = "720p60,720p,480p,best"` line is replaced by `best` automatically.
 
 **Speed:** the encoder is chosen automatically (NVIDIA / Intel / AMD hardware encoder if it really works, else CPU), runs at
 below-normal priority so your game/stream never stutters, and loudness is normalized for social platforms.
@@ -109,7 +134,7 @@ below-normal priority so your game/stream never stutters, and loudness is normal
 ## Captions (optional, one-time setup)
 `pip install faster-whisper`, then tick **Captions** when exporting. First use downloads the speech model (~500 MB for `small`);
 a GPU is used automatically if available. Style: big bold uppercase, 1-3 words at a time, current word highlighted in yellow.
-If nobody speaks in the clip you get a clear message instead of an empty caption track. Set `whisper_model = "base"` for speed
+Only the part you are exporting is transcribed, and stretches Whisper skipped although they are audible are retried with a more sensitive setting. If really nobody speaks there you get a clear message. Set `whisper_model = "base"` for speed
 or `"medium"` for accuracy.
 
 ## Tuning
