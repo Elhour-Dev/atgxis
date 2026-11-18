@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import json
 import logging
+import subprocess
 from pathlib import Path
 
 from .config import Config
+from .recorder import ffmpeg_exe
 
 log = logging.getLogger("autoclip.captions")
 Word = tuple[str, float, float]          # (text, start_s, end_s) relative to the file it was transcribed from
@@ -21,6 +23,17 @@ class CaptionsUnavailable(RuntimeError):
     pass
 
 
+def decode_audio(path: Path):
+    """16 kHz mono float32 samples, decoded by ffmpeg. Handing Whisper a ready array means it never calls PyAV
+    (`av`), whose version mismatches with faster-whisper cause errors like "unexpected keyword argument 'metadata_errors'"."""
+    import numpy as np
+    r = subprocess.run([ffmpeg_exe(), "-v", "error", "-i", str(path), "-vn", "-ac", "1", "-ar", "16000", "-f", "f32le", "-"],
+                       capture_output=True, timeout=300)
+    if r.returncode != 0 or not r.stdout:
+        raise CaptionsUnavailable("this clip has no audio track to caption")
+    return np.frombuffer(r.stdout, dtype=np.float32)
+
+
 def transcribe(path: Path, cfg: Config) -> list[Word]:
     """Word-level transcript with timestamps. Cached next to the clip as <clip>.words.json."""
     cache = path.with_suffix(".words.json")
@@ -30,13 +43,14 @@ def transcribe(path: Path, cfg: Config) -> list[Word]:
         from faster_whisper import WhisperModel
     except ImportError as e:
         raise CaptionsUnavailable("Captions need:  pip install faster-whisper") from e
+    audio = decode_audio(path)                     # fail fast (no audio track) before loading a large model
     key = (cfg.whisper_model, cfg.whisper_device)
     if key not in _MODEL:
         try:
             _MODEL[key] = WhisperModel(cfg.whisper_model, device=cfg.whisper_device, compute_type="auto")
         except Exception:
             _MODEL[key] = WhisperModel(cfg.whisper_model, device="cpu", compute_type="int8")
-    segs, _ = _MODEL[key].transcribe(str(path), word_timestamps=True, vad_filter=True)
+    segs, _ = _MODEL[key].transcribe(audio, word_timestamps=True, vad_filter=True)
     words = [(w.word.strip(), float(w.start), float(w.end)) for s in segs for w in (s.words or []) if w.word.strip()]
     cache.write_text(json.dumps(words, ensure_ascii=False), encoding="utf-8")
     return words

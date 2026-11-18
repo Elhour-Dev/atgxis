@@ -155,3 +155,50 @@ def test_suggested_window_is_always_exactly_30s_and_contains_the_reaction():
     assert fit_window(-5.0, 40.0, 30) == (0.0, 30.0)                      # clamp to the draft start
     assert fit_window(25.0, 40.0, 30) == (10.0, 40.0)                     # clamp to the draft end, still 30 s
     assert fit_window(2.0, 18.0, 30) == (0.0, 18.0)                       # short draft: use all of it
+
+
+def test_transcribe_gives_whisper_decoded_audio_not_a_file_path(tmp_path, monkeypatch):
+    """Regression: faster-whisper decoding a path via PyAV crashed with "unexpected keyword argument 'metadata_errors'"
+    on some installs. We must hand it a ready float32 array (decoded by ffmpeg) so PyAV is never involved."""
+    import sys
+    import types
+    import numpy as np
+    from autoclip import captions
+    clip = tmp_path / "c.mp4"
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=25:duration=3",
+                    "-f", "lavfi", "-i", "sine=frequency=300:duration=3", "-c:v", "libx264", "-c:a", "aac", "-shortest", str(clip)], check=True)
+    seen = {}
+
+    class Word:
+        def __init__(self, w, a, b):
+            self.word, self.start, self.end = w, a, b
+
+    class FakeModel:
+        def __init__(self, *a, **k):
+            pass
+
+        def transcribe(self, audio, **kw):
+            seen["audio"], seen["kw"] = audio, kw
+            seg = types.SimpleNamespace(words=[Word(" hello", 0.5, 0.9), Word(" world", 1.0, 1.4)])
+            return [seg], None
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", types.SimpleNamespace(WhisperModel=FakeModel))
+    captions._MODEL.clear()
+    words = captions.transcribe(clip, Config())
+    assert words == [("hello", 0.5, 0.9), ("world", 1.0, 1.4)]
+    assert isinstance(seen["audio"], np.ndarray) and seen["audio"].dtype == np.float32     # array, not a path
+    assert abs(len(seen["audio"]) - 3 * 16000) < 1600                                      # 3 s at 16 kHz
+    assert seen["kw"]["word_timestamps"] is True
+    assert clip.with_suffix(".words.json").exists()                                        # cached for the next export
+
+
+def test_transcribe_clear_error_for_clip_without_audio(tmp_path, monkeypatch):
+    import sys
+    import types
+    from autoclip import captions
+    clip = tmp_path / "silent.mp4"
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=25:duration=2", "-c:v", "libx264", str(clip)], check=True)
+    monkeypatch.setitem(sys.modules, "faster_whisper", types.SimpleNamespace(WhisperModel=lambda *a, **k: object()))
+    captions._MODEL.clear()
+    with pytest.raises(captions.CaptionsUnavailable, match="no audio"):
+        captions.transcribe(clip, Config())
