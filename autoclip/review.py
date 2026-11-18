@@ -62,14 +62,14 @@ details input[type=text],details textarea{width:100%;box-sizing:border-box;font:
 <button id=folders>📁 Folders</button><button id=accts>🔗 Accounts</button><button id=purge>Delete trashed files</button><span class=mut id=count></span></header>
 <div class=grid id=g></div>
 <script>
-let clips=[],sig='',shareInfo={providers:[],platforms:{}};const openPost=new Map(),openShare=new Map(),NL=String.fromCharCode(10);const trims=new Map();const g=document.getElementById('g');
+let clips=[],shown=30,sig='',shareInfo={providers:[],platforms:{}};const openPost=new Map(),openShare=new Map(),NL=String.fromCharCode(10);const trims=new Map();const g=document.getElementById('g');
 const enc=id=>id.split('/').map(encodeURIComponent).join('/');
 const fmt=t=>Math.floor(t/60)+':'+String(Math.floor(t%60)).padStart(2,'0');
 const fileUrl=(c,f)=>'/files/'+enc(c.dir)+'/'+encodeURIComponent(f);
 function el(t,c,x){const e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e}
 async function load(force){
   const next=await (await fetch('/api/clips')).json();
-  const ns=JSON.stringify(next.map(c=>[c.id,c.status,(c.exports||[]).length,c.shares||null]));
+  const ns=JSON.stringify(next.map(c=>[c.id,c.status,(c.exports||[]).length,c.shares||null,c.res?c.res[1]:0]));
   const playing=[...document.querySelectorAll('video')].some(v=>!v.paused);
   clips=next;if(ns!==sig&&(force||!playing)){sig=ns;render()}}
 function numInput(v,on){const i=el('input');i.type='number';i.step='0.1';i.min='0';i.value=v;i.oninput=()=>on(parseFloat(i.value));return i}
@@ -77,7 +77,9 @@ function render(){
   const f=document.getElementById('f').value,s=document.getElementById('s').value;
   let list=clips.filter(c=>f==='all'||c.status===f);
   list.sort((a,b)=>s==='score'?b.score-a.score:b.created.localeCompare(a.created));
-  g.replaceChildren();document.getElementById('count').textContent=list.length+' clip(s)';
+  g.replaceChildren();const total=list.length;list=list.slice(0,shown);
+  document.getElementById('count').textContent=(total>list.length?'showing '+list.length+' of '+total:total)+' clip(s)';
+  let moreBtn=null;if(total>list.length){moreBtn=el('button','primary','Show '+Math.min(30,total-list.length)+' more');moreBtn.style.gridColumn='1/-1';moreBtn.onclick=()=>{shown+=30;render()}}
   for(const c of list){
     if(!trims.has(c.id)){const n=c.clip_len_s||30;let a=c.suggest_start_s,b=c.suggest_end_s;
       if(b-a>n+1){a=Math.min(Math.max(c.moment_s-12,0),Math.max(c.duration_s-n,0));b=Math.min(a+n,c.duration_s)}   // older, longer suggestions -> 30 s
@@ -163,7 +165,8 @@ function render(){
     for(const [label,st] of [['Keep','keep'],['Trash','trash'],['Undo','new']]){if(st===c.status||(st==='new'&&c.status==='new'))continue;
       const x=el('button',null,label);x.onclick=async()=>{await post('/api/status',{id:c.id,status:st});load(true)};bt.append(x)}
     const src=el('a',null,'Channel');src.href=c.source_url;src.target='_blank';bt.append(src);
-    card.append(bt);g.append(card)}}
+    card.append(bt);g.append(card)}
+  if(moreBtn)g.append(moreBtn)}
 async function post(u,d){const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});if(!r.ok){alert(await r.text());return false}return true}
 
 let layouts={};
@@ -299,7 +302,7 @@ function openLayout(c,video){
     layouts[c.channel]=await r.json();msg.textContent='Saved. New clips use it automatically; press "Export clip" on an existing clip to re-render it.';load(true)};
   resetCap.onclick=()=>{C=null;renderCap()};
   sync();renderCap();loadFrame()}
-document.getElementById('f').onchange=()=>render();document.getElementById('s').onchange=()=>render();
+document.getElementById('f').onchange=()=>{shown=30;render()};document.getElementById('s').onchange=()=>{shown=30;render()};
 document.getElementById('purge').onclick=async()=>{if(confirm('Permanently delete every trashed clip file?')){await post('/api/purge',{});load(true)}};
 document.getElementById('folders').onclick=openFolders;document.getElementById('accts').onclick=openAccounts;Promise.all([loadLayouts(),loadShare()]).then(()=>load(true));setInterval(()=>load(false),10000);
 </script>"""
@@ -324,23 +327,44 @@ class Store:
                 continue
 
     _SIZES: dict = {}
+    _TODO: list = []
+    _probe_lock = threading.Lock()
+    _prober: threading.Thread | None = None
 
     def size_of(self, f: Path) -> list[int] | None:
-        """[width, height] of a clip file; ffprobe runs once per file (cached by path + modification time)."""
+        """[width, height] of a clip file, or None for now. Never blocks: clips made by this version store it in their record; older
+        ones are probed one by one in a background thread and show up on a later refresh (hundreds of clips must not stall the page)."""
         try:
             key = (str(f), f.stat().st_mtime_ns)
         except OSError:
             return None
-        if key not in self._SIZES:
-            sz = probe_size(f)
+        if key in self._SIZES:
+            return self._SIZES[key]
+        with self._probe_lock:
+            if key not in self._TODO:
+                self._TODO.append(key)
+            if Store._prober is None or not Store._prober.is_alive():
+                Store._prober = threading.Thread(target=self._probe_loop, daemon=True)
+                Store._prober.start()
+        return None
+
+    def _probe_loop(self) -> None:
+        while True:
+            with self._probe_lock:
+                if not self._TODO:
+                    return
+                key = self._TODO.pop(0)
+            try:
+                sz = probe_size(Path(key[0]))
+            except Exception:
+                sz = None
             self._SIZES[key] = list(sz) if sz else None
-        return self._SIZES[key]
 
     def list(self) -> list[dict]:
         out = []
         for p, m in self._metas():
             m["dir"] = p.parent.relative_to(self.root).as_posix()
-            m["res"] = self.size_of(p.parent / m["file"]) if m.get("file") else None
+            m["res"] = m.get("res") or (self.size_of(p.parent / m["file"]) if m.get("file") else None)
             if not m.get("description"):
                 m["description"] = self._fresh_description(p, m)
             out.append(m)

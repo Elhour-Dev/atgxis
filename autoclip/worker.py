@@ -16,7 +16,7 @@ from typing import Callable
 from .audio import AudioMeter
 from .chat import TwitchChat, YouTubeChat
 from .config import Config
-from .cutter import cut_clip, cut_draft, draft_offset, export_clip, loudness_jump, probe_duration
+from .cutter import cut_clip, cut_draft, draft_offset, export_clip, loudness_jump, probe_duration, probe_size
 from .describe import suggest as suggest_description
 from .detector import ChatEvent, Spike, SpikeDetector
 from .layout import LayoutStore
@@ -195,6 +195,7 @@ class ChannelWorker(threading.Thread):
                     "platform": self.platform, "source_url": self.url, "status": "new", "score": score,
                     "chat_score": sp.score, "loudness_jump_db": jump,
                     "created": datetime.fromtimestamp(d0).isoformat(timespec="seconds"),
+                    "res": list(probe_size(out) or []) or None,
                     "duration_s": round(dur, 1), "moment_s": round(moment, 1), "clip_len_s": c.clip_len_s,
                     "suggest_start_s": sug[0], "suggest_end_s": sug[1], "exports": [],
                     "spike": {k: v for k, v in asdict(sp).items() if k != "score"}}
