@@ -137,3 +137,21 @@ def test_duplicate_clip_detection():
     w.cfg, w.recent = Config(), [(1000.0, 1100.0)]
     assert w._duplicate(1020.0, 1110.0)          # >60% overlap -> skip
     assert not w._duplicate(1085.0, 1200.0)      # follow-on clip -> keep
+
+
+def test_suggested_window_is_always_exactly_30s_and_contains_the_reaction():
+    from autoclip.detector import Spike
+    from autoclip.worker import fit_window, suggest_window
+    cfg = Config()
+
+    def sp(onset, peak, end):
+        return Spike(start=onset - 9, end=end, onset=onset, peak_t=peak, peak=50, baseline=5, msgs=100, users=50, hype_frac=.5)
+
+    a, b = suggest_window(sp(1000, 1008, 1015), cfg)
+    assert b - a == 30 and a == 1000 - 8 - 4                              # lead-in before the moment
+    assert a <= 1000 and b >= 1008 + 5                                    # moment and reaction both inside
+    a, b = suggest_window(sp(1000, 1055, 1060), cfg)                      # long spike, peak late: window slides to the peak
+    assert b - a == 30 and a <= 1055 <= b - 5
+    assert fit_window(-5.0, 40.0, 30) == (0.0, 30.0)                      # clamp to the draft start
+    assert fit_window(25.0, 40.0, 30) == (10.0, 40.0)                     # clamp to the draft end, still 30 s
+    assert fit_window(2.0, 18.0, 30) == (0.0, 18.0)                       # short draft: use all of it

@@ -51,14 +51,17 @@ def _ts(t: float) -> str:
     return f"{int(t // 3600)}:{int(t % 3600 // 60):02d}:{t % 60:05.2f}"
 
 
-def build_ass(words: list[Word], start: float, end: float, vertical: bool, font: str = "Arial") -> str:
+def build_ass(words: list[Word], start: float, end: float, vertical: bool, font: str = "Arial", seam: bool = False) -> str:
     """ASS subtitle text for the window [start, end] of the transcribed file (times shifted to start at 0)."""
     w, h = (1080, 1920) if vertical else (1920, 1080)
     size, margin_v = (int(h * 0.046), int(h * 0.30)) if vertical else (int(h * 0.062), int(h * 0.09))
+    align = 2
+    if vertical and seam:                       # split layout: captions sit on the line between webcam and gameplay
+        align, margin_v = 5, 0
     head = (f"[Script Info]\nScriptType: v4.00+\nPlayResX: {w}\nPlayResY: {h}\nWrapStyle: 2\n\n"
             "[V4+ Styles]\nFormat: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,"
             "Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding\n"
-            f"Style: Cap,{font},{size},&H00FFFFFF,&H0000FFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,{max(4, size // 14)},2,2,"
+            f"Style: Cap,{font},{size},&H00FFFFFF,&H0000FFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,{max(4, size // 14)},2,{align},"
             f"{int(w * 0.06)},{int(w * 0.06)},{margin_v},1\n\n"
             "[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n")
     ws = [(t, a - start, b - start) for t, a, b in words if b > start and a < end]

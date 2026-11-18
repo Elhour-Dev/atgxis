@@ -38,18 +38,21 @@ class Config:
     # Drafts are cut by STREAM COPY (instant, no CPU, no quality loss) with generous context.
     # You trim in the review page; only the clips you export get one precise encode.
     cut_mode: str = "copy"      # "copy" (fast draft) | "encode" (exact window, ~10s of CPU per clip)
-    pre_s: int = 40             # draft context before the spike (free to be generous in copy mode)
-    post_s: int = 15
-    max_clip_s: int = 150
-    reaction_lag_s: int = 8     # chat reacts this long after the moment; used for the suggested trim
-    suggest_max_s: int = 45     # suggested trim never longer than this (short clips perform best)
+    clip_len_s: int = 30        # length of every finished clip (the suggested trim / automatic vertical export)
+    pre_s: int = 20             # draft context before the spike (free in copy mode)
+    post_s: int = 12
+    max_clip_s: int = 120
+    reaction_lag_s: int = 8     # chat reacts this long after the moment; used to place the 30 s window
     dup_overlap: float = 0.6    # skip a clip that overlaps an existing one by this much
-    encoder: str = "libx264"    # try h264_nvenc / h264_qsv / h264_amf for a hardware encoder
-    preset: str = "veryfast"
-    crf: int = 20
+    encoder: str = "auto"       # "auto" = NVIDIA/Intel/AMD hardware encoder if it really works, else CPU (x264)
+    preset: str = "veryfast"    # CPU encoder speed/quality
+    crf: int = 20               # quality (lower = better/larger)
+    out_fps: int = 30           # social platforms use 30; halves encode time vs 60. 0 = keep source fps
+    normalize_audio: bool = True  # loudness-normalize to social-media level (-14 LUFS)
+    low_priority: bool = True   # encode at below-normal priority so your game / stream never stutters
     cut_workers: int = 2        # total simultaneous encodes across ALL streams
-    vertical: str = "on_demand"  # "on_demand" (tick the box in review) | "auto" (also export a vertical of the suggested trim) | "off"
-    vertical_mode: str = "blur"  # "blur" (full frame on blurred bg) | "crop" (center crop)
+    vertical: str = "auto"      # "auto" = also export a ready 9:16 of every suggested trim | "on_demand" | "off"
+    vertical_mode: str = "blur"  # layout used when a channel has no saved layout: "blur" | "crop"
 
     # --- captions (optional: pip install faster-whisper) ---
     whisper_model: str = "small"    # tiny/base/small/medium; "small" is a good speed/accuracy balance

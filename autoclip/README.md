@@ -32,7 +32,7 @@ python -m autoclip review                                   # later: opens the r
 * Leave it running during the stream. **Ctrl+C** stops it cleanly (clips in progress are finished).
 * Clips land in `clips\<channel>\<date_time>\` as **drafts**: ~40 s of context around the moment, made by stream copy in
   under a second (no CPU use, no quality loss). Nothing is encoded until you ask.
-* In the review page (ranked best-first) each draft opens already trimmed to a **suggested 10-45 s window**. Fine-tune with the
+* In the review page (ranked best-first) each draft opens already trimmed to a **suggested 30 s window**. Fine-tune with the
   *start = player* / *end = player* buttons (the player loops your trim), tick **Vertical 9:16** and/or **Captions**, and press
   **Export clip**: ONE encode does the exact trim + layout + captions. Then **Keep / Trash**; "Delete trashed files" frees disk.
 
@@ -50,7 +50,7 @@ python -m autoclip review                                   # later: opens the r
 | Stream drops / goes offline | Recorder reconnects with back-off and polls politely while offline; chat readers reconnect forever. |
 | Disk fills up | Rolling 10-minute buffer is auto-pruned (stream copy, no re-encode); stops cutting past `max_clips_gb`. |
 | CPU load on a gaming PC | Buffer and drafts are **never re-encoded** (a 48 s draft takes 0.2 s vs 16 s to encode: 70x faster). Only clips you export are encoded, one pass, bounded across all streams. Optional GPU encoder. |
-| Clips start too early / too late | Finds the second chat actually took off (not the window start: ~9 s tighter), then suggests a short trim; you fine-tune in the player. |
+| Clips start too early / too late | Finds the second chat actually took off (not the window start: ~9 s tighter), then places a fixed 30 s window around it (lead-in + the chat peak always inside); you fine-tune in the player. |
 | Same moment clipped twice | A new clip overlapping an existing one by 60%+ is skipped. |
 | Windows quirks | No shell tricks, list-style subprocess args, paths with spaces/apostrophes tested, UTF-8 console so emotes cannot crash it. |
 | Orphaned ffmpeg processes | Shutdown is verified by tests: no leftover processes, buffer folder removed. |
@@ -58,6 +58,21 @@ python -m autoclip review                                   # later: opens the r
 
 Loudness bonus: a clip scores up to +10 if the audio is louder after the moment than before it
 (streamer/game reacting), which filters chat-only false alarms.
+
+## Vertical clips: webcam on top, gameplay below (Reels / TikTok / Shorts)
+Every clip is exported **automatically as a ready 1080x1920, 30 fps, exactly 30 s video**. Until you teach it where a streamer's
+webcam is, it uses a blurred full frame. Do this **once per streamer** (takes ~20 seconds):
+1. `python -m autoclip review`, then press **Set layout for <channel>** on any of that channel's clips.
+2. Drag the **red box** over the webcam and the **blue box** over the part of the game you want shown
+   (boxes keep the right shape automatically; drag the corner square to resize). Optional: **Auto-detect webcam**
+   (`pip install "opencv-python-headless>=4.8,<5"`).
+3. Press **Preview** to see the finished vertical frame, then **Save layout**. All future clips for that channel use it.
+   Press **Export clip** on older clips to re-render them with the new layout.
+Other options: whole screen on a blurred background, plain center crop, adjustable webcam/gameplay split (40-60%).
+Captions (if enabled) sit on the line between the two halves.
+
+**Speed:** the encoder is chosen automatically (NVIDIA / Intel / AMD hardware encoder if it really works, else CPU), runs at
+below-normal priority so your game/stream never stutters, and loudness is normalized for social platforms.
 
 ## Captions (optional, one-time setup)
 `pip install faster-whisper`, then tick **Captions** when exporting. First use downloads the speech model (~500 MB for `small`);

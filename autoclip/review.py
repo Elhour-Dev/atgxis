@@ -3,14 +3,18 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import re
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from .config import Config
 from .captions import CaptionsUnavailable, build_ass, transcribe
-from .cutter import export_clip
+from . import layout as lay
+from .cutter import export_clip, grab_frame
+from .facecam import FacecamUnavailable, detect_facecam
+from .layout import LayoutError, LayoutStore
 
 PAGE = """<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
 <title>Clip review</title>
@@ -30,6 +34,13 @@ video{width:100%;border-radius:8px;background:#000} .row{display:flex;gap:8px;fl
 .chat{font-size:13px;background:#8881;border-radius:8px;padding:6px 8px;max-height:60px;overflow:auto}
 .trim{background:#8881;border-radius:8px;padding:8px;display:flex;flex-direction:column;gap:6px}
 label{display:flex;gap:4px;align-items:center;font-size:14px}
+.modal{position:fixed;inset:0;background:#000b;display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:16px;z-index:10}
+.mbox{background:var(--bg);border-radius:14px;padding:14px;max-width:1180px;width:100%;display:flex;flex-direction:column;gap:10px}
+.mcols{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-start}
+canvas{max-width:100%;border-radius:8px;touch-action:none;cursor:crosshair;background:#000}
+.pv{height:560px;max-width:100%;border-radius:8px;background:#000;object-fit:contain}
+.hint{font-size:13px;color:var(--mut)}
+video.vert{max-height:360px;width:auto;align-self:flex-start}
 </style>
 <header><h1>Clip review</h1>
 <select id=f><option value=new>To review</option><option value=keep>Kept</option><option value=trash>Trash</option><option value=all>All</option></select>
@@ -54,7 +65,9 @@ function render(){
   list.sort((a,b)=>s==='score'?b.score-a.score:b.created.localeCompare(a.created));
   g.replaceChildren();document.getElementById('count').textContent=list.length+' clip(s)';
   for(const c of list){
-    if(!trims.has(c.id))trims.set(c.id,{start:c.suggest_start_s,end:c.suggest_end_s,vertical:true,captions:false});
+    if(!trims.has(c.id)){const n=c.clip_len_s||30;let a=c.suggest_start_s,b=c.suggest_end_s;
+      if(b-a>n+1){a=Math.min(Math.max(c.moment_s-12,0),Math.max(c.duration_s-n,0));b=Math.min(a+n,c.duration_s)}   // older, longer suggestions -> 30 s
+      trims.set(c.id,{start:+a.toFixed(1),end:+b.toFixed(1),vertical:true,captions:false})}
     const t=trims.get(c.id);
     const card=el('div','card '+c.status);
     const v=el('video');v.controls=true;v.preload='metadata';v.src=fileUrl(c,c.file);
@@ -68,21 +81,96 @@ function render(){
     const a=numInput(t.start,x=>{t.start=x;upd()}),b=numInput(t.end,x=>{t.end=x;upd()});
     const setA=el('button',null,'◀ start = player');setA.onclick=()=>{t.start=+v.currentTime.toFixed(1);a.value=t.start;upd()};
     const setB=el('button',null,'end = player ▶');setB.onclick=()=>{t.end=+v.currentTime.toFixed(1);b.value=t.end;upd()};
-    const r1=el('div','row');r1.append(el('span','mut','Trim'),a,setA,b,setB,len);upd();
+    const snap=el('button',null,'30 s');snap.title='Make the clip exactly 30 s from the start point';snap.onclick=()=>{t.end=+Math.min(t.start+(c.clip_len_s||30),c.duration_s).toFixed(1);b.value=t.end;upd()};
+    const r1=el('div','row');r1.append(el('span','mut','Trim'),a,setA,b,setB,snap,len);upd();
     const r2=el('div','row');
     for(const [k,label] of [['vertical','Vertical 9:16'],['captions','Captions']]){const l=el('label'),cb=el('input');cb.type='checkbox';cb.checked=t[k];cb.onchange=()=>{t[k]=cb.checked};l.append(cb,label);r2.append(l)}
     const ex=el('button','primary','Export clip');ex.onclick=async()=>{ex.disabled=true;ex.textContent='Encoding…';const ok=await post('/api/export',{id:c.id,start:t.start,end:t.end,vertical:t.vertical,captions:t.captions});ex.disabled=false;ex.textContent='Export clip';if(ok)load(true)};
     r2.append(ex);tr.append(r1,r2);card.append(tr);
     if((c.exports||[]).length){const e=el('div','row');e.append(el('span','mut','Exports:'));for(const x of c.exports){const l=el('a',null,(x.vertical?'9:16 ':'')+(x.captions?'CC ':'')+fmt(x.start)+'-'+fmt(x.end));l.href=fileUrl(c,x.file);l.target='_blank';e.append(l)}card.append(e)}
+    const lb=el('button',null,layouts[c.channel]?'Edit layout for '+c.channel+' ✓':'Set layout for '+c.channel+' (webcam + gameplay)');lb.onclick=()=>openLayout(c,v);card.append(lb);
+    const vx=(c.exports||[]).filter(x=>x.vertical).slice(-1)[0];
+    if(vx){const pvid=el('video','vert');pvid.controls=true;pvid.preload='metadata';pvid.src=fileUrl(c,vx.file);card.append(el('div','mut','Vertical preview (latest export):'),pvid)}
     const bt=el('div','row');
     for(const [label,st] of [['Keep','keep'],['Trash','trash'],['Undo','new']]){if(st===c.status||(st==='new'&&c.status==='new'))continue;
       const x=el('button',null,label);x.onclick=async()=>{await post('/api/status',{id:c.id,status:st});load(true)};bt.append(x)}
     const src=el('a',null,'Channel');src.href=c.source_url;src.target='_blank';bt.append(src);
     card.append(bt);g.append(card)}}
 async function post(u,d){const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});if(!r.ok){alert(await r.text());return false}return true}
+
+let layouts={};
+async function loadLayouts(){try{layouts=await (await fetch('/api/layouts')).json()}catch(e){}}
+const OUTW=1080,OUTH=1920,even=n=>Math.max(2,Math.round(n/2)*2);
+function openLayout(c,video){
+  const L=JSON.parse(JSON.stringify(layouts[c.channel]||{mode:'split',split:0.5,game_fit:'cover',facecam:null,game:null}));
+  if(!L.mode)L.mode='split';if(!L.split)L.split=0.5;if(!L.game_fit)L.game_fit='cover';
+  const ov=el('div','modal'),box=el('div','mbox');ov.append(box);
+  box.append(el('h2',null,'Vertical layout for '+c.channel));
+  box.append(el('div','hint','Drag the RED box over the webcam and the BLUE box over the part of the game you want to show. Drag a box to move it, drag its bottom-right square to resize. Set it once per streamer; every clip uses it.'));
+  const ctl=el('div','row'),mode=el('select');
+  for(const [v,t] of [['split','Webcam on top + gameplay below'],['blur','Whole screen on blurred background'],['crop','Plain center crop']]){const o=el('option',null,t);o.value=v;mode.append(o)}
+  mode.value=L.mode;
+  const fit=el('select');for(const [v,t] of [['cover','Gameplay: crop to blue box'],['blur','Gameplay: whole screen, blurred bars']]){const o=el('option',null,t);o.value=v;fit.append(o)}fit.value=L.game_fit;
+  const sp=el('input');sp.type='range';sp.min='40';sp.max='60';sp.value=Math.round(L.split*100);
+  const spl=el('span','mut','Webcam height '+sp.value+'%');
+  const tin=numInput((+video.currentTime||0).toFixed(1),()=>{});const tb=el('button',null,'Load frame at (s)');
+  const auto=el('button',null,'Auto-detect webcam'),pv=el('button',null,'Preview'),save=el('button','primary','Save layout'),close=el('button',null,'Close');
+  ctl.append(mode,fit,sp,spl,el('span','mut','Frame:'),tin,tb,auto,pv,save,close);box.append(ctl);
+  const cols=el('div','mcols'),cv=el('canvas'),img=new Image(),pimg=el('img','pv');pimg.alt='Preview appears here';
+  cols.append(cv,pimg);box.append(cols);document.body.append(ov);
+  const msg=el('div','hint');box.append(msg);
+  let W=0,H=0,drag=null;
+  const hh=()=>{const t=even(OUTH*L.split);return [t,OUTH-t]};
+  const aspect=k=>{const [a,b]=hh();return OUTW/(k==='facecam'?a:b)};
+  function fixRect(k){const r=L[k];if(!r)return;const A=aspect(k);let w=Math.min(r.w,1),h=(w*W/A)/H;if(h>1){h=1;w=(h*H*A)/W}
+    r.w=w;r.h=h;r.x=Math.min(Math.max(r.x,0),1-w);r.y=Math.min(Math.max(r.y,0),1-h)}
+  function defaults(){
+    if(!L.facecam){const w=0.26,A=aspect('facecam');L.facecam={w,h:(w*W/A)/H,x:0.72,y:0.66}}
+    if(!L.game){const A=aspect('game'),h=1,w=Math.min(1,(h*H*A)/W);L.game={w,h,x:(1-w)/2,y:0}}
+    fixRect('facecam');fixRect('game')}
+  const px=r=>({x:r.x*W,y:r.y*H,w:r.w*W,h:r.h*H});
+  function draw(){const g=cv.getContext('2d');g.clearRect(0,0,W,H);if(img.complete)g.drawImage(img,0,0,W,H);
+    if(L.mode!=='split')return;
+    const boxes=[['facecam','#ef4444','WEBCAM (top)']];if(L.game_fit==='cover')boxes.push(['game','#3b82f6','GAMEPLAY (bottom)']);
+    for(const [k,col,label] of boxes){const r=px(L[k]);g.lineWidth=3;g.strokeStyle=col;g.strokeRect(r.x,r.y,r.w,r.h);
+      g.fillStyle=col+'33';g.fillRect(r.x,r.y,r.w,r.h);g.fillStyle=col;g.fillRect(r.x+r.w-12,r.y+r.h-12,12,12);
+      g.font='bold 14px sans-serif';g.fillText(label,r.x+6,r.y+18)}}
+  function sync(){const split=mode.value==='split';fit.style.display=sp.style.display=spl.style.display=auto.style.display=split?'':'none'}
+  function layoutOut(){if(mode.value!=='split')return {mode:mode.value};
+    return {mode:'split',split:L.split,game_fit:L.game_fit,facecam:L.facecam,game:L.game_fit==='cover'?L.game:null}}
+  function loadFrame(){msg.textContent='Loading frame…';img.src='/api/frame?id='+encodeURIComponent(c.id)+'&t='+(parseFloat(tin.value)||0)+'&n='+Date.now()}
+  img.onload=()=>{W=Math.min(720,img.naturalWidth);H=Math.round(W*img.naturalHeight/img.naturalWidth);cv.width=W;cv.height=H;defaults();msg.textContent='';draw()};
+  img.onerror=()=>{msg.textContent='Could not load a frame from this clip.'};
+  const pos=e=>{const b=cv.getBoundingClientRect();return {x:(e.clientX-b.left)*W/b.width,y:(e.clientY-b.top)*H/b.height}};
+  cv.onpointerdown=e=>{if(L.mode!=='split'||!W)return;const p=pos(e);
+    const ks=L.game_fit==='cover'?['game','facecam']:['facecam'];
+    for(const k of ks.reverse()){const r=px(L[k]);
+      if(p.x>=r.x+r.w-18&&p.x<=r.x+r.w+6&&p.y>=r.y+r.h-18&&p.y<=r.y+r.h+6){drag={k,type:'size'};break}
+      if(p.x>=r.x&&p.x<=r.x+r.w&&p.y>=r.y&&p.y<=r.y+r.h){drag={k,type:'move',dx:p.x-r.x,dy:p.y-r.y};break}}
+    if(drag)cv.setPointerCapture(e.pointerId)};
+  cv.onpointermove=e=>{if(!drag)return;const p=pos(e),r=L[drag.k],A=aspect(drag.k);
+    if(drag.type==='move'){r.x=Math.min(Math.max((p.x-drag.dx)/W,0),1-r.w);r.y=Math.min(Math.max((p.y-drag.dy)/H,0),1-r.h)}
+    else{let w=Math.max(p.x-r.x*W,W*0.06),h=w/A;if(r.y*H+h>H){h=H-r.y*H;w=h*A}if(r.x*W+w>W){w=W-r.x*W;h=w/A}r.w=w/W;r.h=h/H}
+    draw()};
+  cv.onpointerup=()=>{drag=null};
+  mode.onchange=()=>{L.mode=mode.value;sync();draw()};fit.onchange=()=>{L.game_fit=fit.value;draw()};
+  sp.oninput=()=>{L.split=sp.value/100;spl.textContent='Webcam height '+sp.value+'%';fixRect('facecam');fixRect('game');draw()};
+  tb.onclick=loadFrame;close.onclick=()=>ov.remove();
+  auto.onclick=async()=>{auto.disabled=true;msg.textContent='Looking for a face…';
+    const r=await fetch('/api/autodetect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:c.id,split:L.split})});
+    auto.disabled=false;if(!r.ok){msg.textContent=await r.text();return}
+    L.facecam=await r.json();fixRect('facecam');draw();msg.textContent='Webcam found. Adjust the red box if needed, then press Preview.'};
+  pv.onclick=async()=>{pv.disabled=true;msg.textContent='Rendering preview…';
+    const r=await fetch('/api/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:c.id,t:parseFloat(tin.value)||0,layout:layoutOut()})});
+    pv.disabled=false;if(!r.ok){msg.textContent=await r.text();return}
+    pimg.src=URL.createObjectURL(await r.blob());msg.textContent=''};
+  save.onclick=async()=>{const r=await fetch('/api/layout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel:c.channel,layout:layoutOut()})});
+    if(!r.ok){msg.textContent=await r.text();return}
+    layouts[c.channel]=await r.json();msg.textContent='Saved. New clips use it automatically; press "Export clip" on an existing clip to re-render it.';load(true)};
+  sync();loadFrame()}
 document.getElementById('f').onchange=()=>render();document.getElementById('s').onchange=()=>render();
 document.getElementById('purge').onclick=async()=>{if(confirm('Permanently delete every trashed clip file?')){await post('/api/purge',{});load(true)}};
-load(true);setInterval(()=>load(false),10000);
+loadLayouts().then(()=>load(true));setInterval(()=>load(false),10000);
 </script>"""
 
 
@@ -127,6 +215,34 @@ class Store:
             _write_json(p, m)
             return True
 
+    def draft_path(self, cid: str) -> tuple[Path, dict]:
+        p, m = self.find(cid)
+        if not p:
+            raise ValueError("clip not found")
+        return p.parent / m["file"], m
+
+    def frame(self, cid: str, t: float) -> bytes:
+        src, _ = self.draft_path(cid)
+        img = grab_frame(src, t)
+        if not img:
+            raise RuntimeError("could not read a frame from the clip")
+        return img
+
+    def preview(self, cid: str, t: float, layout: dict) -> bytes:
+        src, _ = self.draft_path(cid)
+        graph = lay.chain(lay.validate(layout))
+        img = grab_frame(src, t, graph)
+        if not img:
+            raise RuntimeError("could not render the preview")
+        return img
+
+    def autodetect(self, cid: str, split: float) -> dict:
+        src, m = self.draft_path(cid)
+        rect = detect_facecam(src, float(m["duration_s"]), split)
+        if not rect:
+            raise ValueError("no face found consistently in this clip. Draw the webcam box by hand.")
+        return rect
+
     def export(self, cid: str, start: float, end: float, vertical: bool, captions: bool) -> str:
         """Precise trim (+ optional 9:16, + optional burned captions) in ONE encode. Returns the new file name."""
         p, m = self.find(cid)
@@ -135,20 +251,22 @@ class Store:
         src = p.parent / m["file"]
         if not (0 <= start < end <= m["duration_s"] + 1) or end - start > 600:
             raise ValueError(f"bad trim {start}-{end} (draft is {m['duration_s']}s)")
+        layout = LayoutStore(self.root).get(m["channel"]) if vertical else None
         ass = None
         if captions:
             words = transcribe(src, self.cfg)                      # may raise CaptionsUnavailable
             if not words:
                 raise ValueError("no speech found in this clip, so there is nothing to caption")
-            ass = build_ass(words, start, end, vertical, self.cfg.caption_font)
+            ass = build_ass(words, start, end, vertical, self.cfg.caption_font, seam=(layout or {}).get("mode") == "split")
         name = f"{src.stem}_{int(start * 10)}-{int(end * 10)}{'_v' if vertical else ''}{'_cc' if captions else ''}.mp4"
-        if not export_clip(src, p.parent / name, start, end, self.cfg, vertical, ass):
+        if not export_clip(src, p.parent / name, start, end, self.cfg, vertical, ass, layout):
             raise RuntimeError("ffmpeg failed; see the console running `review`")
         with self.lock:
             p, m = self.find(cid)
             m.setdefault("exports", [])
             m["exports"] = [e for e in m["exports"] if e["file"] != name] + [
-                {"file": name, "start": start, "end": end, "vertical": vertical, "captions": captions}]
+                {"file": name, "start": start, "end": end, "vertical": vertical, "captions": captions,
+                 "layout": (layout or {}).get("mode", self.cfg.vertical_mode) if vertical else None}]
             _write_json(p, m)
         return name
 
@@ -186,6 +304,16 @@ def make_handler(store: Store):
                 return self._send(200, PAGE.encode(), "text/html; charset=utf-8")
             if path == "/api/clips":
                 return self._send(200, json.dumps(store.list()).encode())
+            if path == "/api/layouts":
+                return self._send(200, json.dumps(LayoutStore(store.root).all()).encode())
+            if path == "/api/frame":
+                q = parse_qs(urlparse(self.path).query)
+                try:
+                    return self._send(200, store.frame(q["id"][0], float(q.get("t", ["0"])[0])), "image/jpeg", {"Cache-Control": "no-store"})
+                except (ValueError, KeyError) as e:
+                    return self._send(400, str(e).encode(), "text/plain")
+                except Exception as e:
+                    return self._send(500, str(e).encode(), "text/plain")
             if path.startswith("/files/"):
                 f = (store.root / path[7:]).resolve()
                 if store.root not in f.parents or not f.is_file() or f.suffix.lower() != ".mp4":
@@ -226,6 +354,29 @@ def make_handler(store: Store):
                     return self._send(400, str(e).encode(), "text/plain")
                 except Exception as e:
                     return self._send(500, f"export failed: {e}".encode(), "text/plain")
+            elif path == "/api/layout":
+                try:
+                    if not re.fullmatch(r"[\w.-]{1,60}", str(body.get("channel", ""))):
+                        raise LayoutError("bad channel name")
+                    clean = LayoutStore(store.root).save(str(body["channel"]), body.get("layout"))
+                    return self._send(200, json.dumps(clean).encode())
+                except (LayoutError, KeyError) as e:
+                    return self._send(400, str(e).encode(), "text/plain")
+            elif path == "/api/preview":
+                try:
+                    return self._send(200, store.preview(str(body["id"]), float(body.get("t", 0)), body["layout"]), "image/jpeg",
+                                      {"Cache-Control": "no-store"})
+                except (ValueError, KeyError, LayoutError) as e:
+                    return self._send(400, str(e).encode(), "text/plain")
+                except Exception as e:
+                    return self._send(500, str(e).encode(), "text/plain")
+            elif path == "/api/autodetect":
+                try:
+                    return self._send(200, json.dumps(store.autodetect(str(body["id"]), float(body.get("split", 0.5)))).encode())
+                except (ValueError, KeyError, FacecamUnavailable) as e:
+                    return self._send(400, str(e).encode(), "text/plain")
+                except Exception as e:
+                    return self._send(500, str(e).encode(), "text/plain")
             elif path == "/api/purge":
                 store.purge()
                 ok = True

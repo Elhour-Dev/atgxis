@@ -2,11 +2,15 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from .config import Config
+from . import layout as lay
 from .recorder import Segment, ffmpeg_exe, ffprobe_exe
 
 log = logging.getLogger("autoclip.cut")
@@ -16,10 +20,58 @@ def _run(cmd: list[str], timeout: int = 300) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, errors="replace")
 
 
+_ENC_CACHE: dict[str, str] = {}
+
+
+def pick_encoder(cfg: Config) -> str:
+    """'auto' -> first hardware H.264 encoder that REALLY works here (a 1-frame test encode), else libx264.
+    Many PCs list nvenc in ffmpeg without having the GPU for it, so listing is not enough."""
+    if cfg.encoder != "auto":
+        return cfg.encoder
+    if "auto" in _ENC_CACHE:
+        return _ENC_CACHE["auto"]
+    chosen = "libx264"
+    listing = _run([ffmpeg_exe(), "-hide_banner", "-encoders"], 30).stdout
+    for enc in ("h264_nvenc", "h264_qsv", "h264_amf"):
+        if enc not in listing:
+            continue
+        probe = _run([ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=black:s=256x256:d=0.2",
+                      "-frames:v", "1", "-c:v", enc, "-f", "null", "-"], 30)
+        if probe.returncode == 0:
+            chosen = enc
+            break
+    log.info("video encoder: %s", chosen)
+    _ENC_CACHE["auto"] = chosen
+    return chosen
+
+
 def _vcodec(cfg: Config) -> list[str]:
-    if cfg.encoder == "libx264":
+    enc = pick_encoder(cfg)
+    if enc == "libx264":
         return ["-c:v", "libx264", "-preset", cfg.preset, "-crf", str(cfg.crf), "-pix_fmt", "yuv420p"]
-    return ["-c:v", cfg.encoder, "-pix_fmt", "yuv420p", "-b:v", "6M"]   # hardware encoders: simple bitrate mode
+    q = str(cfg.crf + 2)
+    if enc == "h264_nvenc":
+        return ["-c:v", enc, "-preset", "p5", "-rc", "vbr", "-cq", q, "-b:v", "0", "-pix_fmt", "yuv420p"]
+    if enc == "h264_qsv":
+        return ["-c:v", enc, "-global_quality", q, "-pix_fmt", "nv12"]
+    if enc == "h264_amf":
+        return ["-c:v", enc, "-quality", "quality", "-rc", "cqp", "-qp_i", q, "-qp_p", q, "-pix_fmt", "yuv420p"]
+    return ["-c:v", enc, "-pix_fmt", "yuv420p", "-b:v", "8M"]
+
+
+def _acodec(cfg: Config) -> list[str]:
+    af = ["-af", "loudnorm=I=-14:TP=-1.5:LRA=11"] if cfg.normalize_audio else []
+    return [*af, "-c:a", "aac", "-b:a", "192k", "-ar", "48000"]
+
+
+def _low_priority(cmd: list[str], cfg: Config) -> tuple[list[str], dict]:
+    """Run ffmpeg at below-normal priority so the game / the stream you are watching never competes with it."""
+    if not cfg.low_priority:
+        return cmd, {}
+    if sys.platform == "win32":
+        return cmd, {"creationflags": 0x00004000}          # BELOW_NORMAL_PRIORITY_CLASS
+    nice = shutil.which("nice")
+    return ([nice, "-n", "10", *cmd] if nice else cmd), {}
 
 
 def cut_clip(segs: list[Segment], a: float, b: float, out: Path, cfg: Config) -> bool:
@@ -51,21 +103,18 @@ def cut_clip(segs: list[Segment], a: float, b: float, out: Path, cfg: Config) ->
     return True
 
 
-def _filters(cfg: Config, vertical: bool, ass: str | None) -> list[str]:
-    """ffmpeg filter arguments for: optional 9:16 layout, optional burned-in captions (ass file name, relative to cwd)."""
-    if not vertical and not ass:
-        return []
+def _filters(cfg: Config, vertical: bool, ass: str | None, layout: dict | None = None) -> list[str]:
+    """ffmpeg filter arguments: optional 9:16 layout (split / blur / crop), fps cap, optional burned-in captions.
+    `ass` is a bare file name (ffmpeg runs in that folder) so Windows drive letters never break the filter."""
+    post = ([f"fps={cfg.out_fps}"] if cfg.out_fps else []) + ([f"ass={ass}"] if ass else [])
     if not vertical:
-        return ["-vf", f"ass={ass}"]
-    if cfg.vertical_mode == "crop":
-        chain = "[0:v]scale=-2:1920,crop=1080:1920[v]"
-    else:
-        chain = ("[0:v]split[a][b];[a]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=25:5[bg];"
-                 "[b]scale=1080:-2[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2[v]")
-    if ass:
-        chain += f";[v]ass={ass}[vo]"
-        return ["-filter_complex", chain, "-map", "[vo]", "-map", "0:a?"]
-    return ["-filter_complex", chain, "-map", "[v]", "-map", "0:a?"]
+        return ["-vf", ",".join(post)] if post else []
+    base = layout if layout else {"mode": cfg.vertical_mode}
+    graph = lay.chain(base)
+    if post:
+        graph += f";[v]{','.join(post)}[vo]"
+        return ["-filter_complex", graph, "-map", "[vo]", "-map", "0:a?"]
+    return ["-filter_complex", graph, "-map", "[v]", "-map", "0:a?"]
 
 
 def cut_draft(segs: list[Segment], a: float, b: float, out: Path) -> tuple[list[Segment], float] | None:
@@ -116,8 +165,8 @@ def probe_duration(path: Path) -> float | None:
 
 
 def export_clip(src: Path, out: Path, start: float, end: float, cfg: Config, vertical: bool = False,
-                ass_text: str | None = None) -> bool:
-    """FINAL clip: ONE precise encode that does trim + optional 9:16 + optional burned captions together.
+                ass_text: str | None = None, layout: dict | None = None) -> bool:
+    """FINAL clip: ONE precise encode that does trim + optional 9:16 layout + optional burned captions together.
     ffmpeg runs inside the output folder with bare file names so Windows drive letters ('C:') never break the ass filter."""
     out.parent.mkdir(parents=True, exist_ok=True)
     ass_name = None
@@ -125,10 +174,11 @@ def export_clip(src: Path, out: Path, start: float, end: float, cfg: Config, ver
         ass_name = out.with_suffix(".ass").name
         (out.parent / ass_name).write_text(ass_text, encoding="utf-8")
     cmd = [ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error", "-ss", f"{max(start, 0):.3f}", "-i", str(src.resolve()),
-           "-t", f"{max(end - start, 0.5):.3f}", *_filters(cfg, vertical, ass_name), *_vcodec(cfg),
-           "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", out.name]
+           "-t", f"{max(end - start, 0.5):.3f}", *_filters(cfg, vertical, ass_name, layout), *_vcodec(cfg),
+           *_acodec(cfg), "-movflags", "+faststart", out.name]
+    cmd, kw = _low_priority(cmd, cfg)
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=900, errors="replace", cwd=out.parent)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=900, errors="replace", cwd=out.parent, **kw)
     finally:
         if ass_name:
             (out.parent / ass_name).unlink(missing_ok=True)
@@ -139,21 +189,19 @@ def export_clip(src: Path, out: Path, start: float, end: float, cfg: Config, ver
     return True
 
 
-def make_vertical(src: Path, dst: Path, cfg: Config) -> bool:
-    """1080x1920 version. 'blur': whole frame centered over a blurred copy. 'crop': center crop."""
-    if cfg.vertical_mode == "crop":
-        vf = "scale=-2:1920,crop=1080:1920"
-    else:
-        vf = ("split[a][b];[a]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=25:5[bg];"
-              "[b]scale=1080:-2[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2")
-    cmd = [ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error", "-i", str(src), "-filter_complex" if "[" in vf else "-vf", vf,
-           *_vcodec(cfg), "-c:a", "copy", "-movflags", "+faststart", str(dst)]
-    r = _run(cmd, timeout=600)
-    if r.returncode != 0:
-        log.error("vertical export failed: %s", r.stderr.strip()[-400:])
-        dst.unlink(missing_ok=True)
-        return False
-    return True
+def grab_frame(src: Path, t: float, layout_graph: str | None = None, width: int = 1280) -> bytes | None:
+    """One JPEG frame at time t (for the layout editor). With layout_graph: the finished 9:16 composition of that frame."""
+    cmd = [ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-ss", f"{max(t, 0):.2f}", "-i", str(src), "-frames:v", "1"]
+    cmd += ["-filter_complex", layout_graph, "-map", "[v]"] if layout_graph else ["-vf", f"scale={width}:-2"]
+    cmd += ["-q:v", "3", "-f", "image2pipe", "-vcodec", "mjpeg", "-"]
+    r = subprocess.run(cmd, capture_output=True, timeout=60)
+    return r.stdout if r.returncode == 0 and r.stdout[:2] == b"\xff\xd8" else None
+
+
+def make_vertical(src: Path, dst: Path, cfg: Config, layout: dict | None = None) -> bool:
+    """Whole-file 9:16 conversion (kept for compatibility); export_clip(vertical=True) is the main path."""
+    d = src.parent
+    return export_clip(src, dst, 0.0, probe_duration(src) or 9999, cfg, vertical=True, layout=layout) if d else False
 
 
 _MEAN = re.compile(r"mean_volume:\s*(-?[\d.]+) dB")

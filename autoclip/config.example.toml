@@ -8,10 +8,10 @@ warmup_s = 90       # time spent learning the channel's normal chat level before
 
 # --- drafts and suggested trim ---
 cut_mode = "copy"       # "copy" = instant draft (recommended). "encode" = exact window but ~15 s of CPU per clip
-pre_s = 40              # draft context before the spike (free in copy mode)
-post_s = 15
-reaction_lag_s = 8      # chat reacts ~8 s after the moment; raise it if suggested trims start too late
-suggest_max_s = 45      # suggested trim never longer than this
+clip_len_s = 30         # every finished clip is exactly this long
+pre_s = 20              # draft context before the spike (free in copy mode)
+post_s = 12
+reaction_lag_s = 8      # chat reacts ~8 s after the moment; raise it if the 30 s window starts too late
 
 # --- captions ---
 # whisper_model = "small"   # tiny / base / small / medium

@@ -1,3 +1,5 @@
 # Core uses only the Python standard library. Install these only if you need the feature:
 chat-downloader>=0.2.8    # YouTube live chat (not needed for Twitch)
+opencv-python-headless>=4.8,<5   # optional: 'Auto-detect webcam' in the layout editor
+scikit-image              # only to run the face-detection test
 pytest>=8                 # only to run the tests

@@ -17,6 +17,7 @@ from .chat import TwitchChat, YouTubeChat
 from .config import Config
 from .cutter import cut_clip, cut_draft, draft_offset, export_clip, loudness_jump, probe_duration
 from .detector import ChatEvent, Spike, SpikeDetector
+from .layout import LayoutStore
 from .recorder import Recorder
 
 log = logging.getLogger("autoclip.worker")
@@ -33,6 +34,23 @@ def parse_target(target: str) -> tuple[str, str, str]:
     if not re.fullmatch(r"\w{2,25}", name):
         raise ValueError(f"cannot understand target {target!r}")
     return "twitch", name, f"https://www.twitch.tv/{name}"
+
+
+def suggest_window(sp: Spike, cfg: Config) -> tuple[float, float]:
+    """Wall-clock window of exactly cfg.clip_len_s: a few seconds of lead-in before the moment, and always
+    containing the chat peak (the reaction). Long spikes slide the window to the peak instead of getting longer."""
+    n = cfg.clip_len_s
+    start = sp.onset - cfg.reaction_lag_s - 4
+    if sp.peak_t + 5 > start + n:
+        start = sp.peak_t + 5 - n
+    return start, start + n
+
+
+def fit_window(start: float, dur: float, length: float) -> tuple[float, float]:
+    """Clamp a [start, start+length] window inside a file of `dur` seconds, keeping the length when possible."""
+    length = min(length, dur)
+    start = min(max(start, 0.0), dur - length)
+    return round(start, 1), round(start + length, 1)
 
 
 def _dir_gb(p: Path) -> float:
@@ -60,6 +78,7 @@ class ChannelWorker(threading.Thread):
         self.own_pool = pool is None          # one shared pool across streams keeps total CPU use bounded
         self.pool = pool or ThreadPoolExecutor(max_workers=cfg.cut_workers, thread_name_prefix=f"cut-{label}")
         self.recent: list[tuple[float, float]] = []
+        self._warned_layout = False
         self.pending: list[tuple[float, float, float, Spike]] = []   # (cut_at, a, b, spike)
         self.clips_made = 0
         self.root = out_root
@@ -122,24 +141,22 @@ class ChannelWorker(threading.Thread):
             cid = "clip_" + datetime.fromtimestamp(sp.onset).strftime("%H%M%S")
             out = self.out_dir / f"{cid}.mp4"
             segs = self.recorder.segments_between(a, b)
-            # suggested trim (wall-clock): from just before the moment to shortly after the reaction, capped for short-form
-            sa = sp.onset - c.reaction_lag_s - 2
-            sb = max(min(sp.end + 6, sa + c.suggest_max_s), sp.peak_t + 8)
+            sa, sb = suggest_window(sp, c)                      # the 30 s window (wall-clock)
             if c.cut_mode == "encode":
                 if not cut_clip(segs, a, b, out, c):
                     return
                 d0, sel = max(a, segs[0].t0), None
-                sug = (max(sa - d0, 0.0), sb - d0)
+                sug_a = sa - d0
                 moment = sp.onset - d0
             else:
                 res = cut_draft(segs, a, b, out)
                 if not res:
                     return
                 sel, d0 = res
-                sug = (draft_offset(sel, sa), draft_offset(sel, sb))
+                sug_a = draft_offset(sel, sa)
                 moment = draft_offset(sel, sp.onset)
             dur = probe_duration(out) or (b - a)
-            sug = (round(min(sug[0], dur - 1), 1), round(min(max(sug[1], sug[0] + 3), dur), 1))
+            sug = fit_window(sug_a, dur, c.clip_len_s)
             score, jump = sp.score, loudness_jump(out, max(moment - c.reaction_lag_s, 1.0))
             if jump is not None and jump > 3:
                 score = min(100.0, round(score + min(jump, 10), 1))          # louder after the moment = real reaction
@@ -147,7 +164,7 @@ class ChannelWorker(threading.Thread):
                     "platform": self.platform, "source_url": self.url, "status": "new", "score": score,
                     "chat_score": sp.score, "loudness_jump_db": jump,
                     "created": datetime.fromtimestamp(d0).isoformat(timespec="seconds"),
-                    "duration_s": round(dur, 1), "moment_s": round(moment, 1),
+                    "duration_s": round(dur, 1), "moment_s": round(moment, 1), "clip_len_s": c.clip_len_s,
                     "suggest_start_s": sug[0], "suggest_end_s": sug[1], "exports": [],
                     "spike": {k: v for k, v in asdict(sp).items() if k != "score"}}
             tmp = out.with_suffix(".json.tmp")
@@ -156,10 +173,18 @@ class ChannelWorker(threading.Thread):
             self.recent.append((a, b))
             self.clips_made += 1
             log.info("[%s] saved %s  draft %.0fs, suggested trim %.0f-%.0fs, score %.0f", self.label, out.name, dur, sug[0], sug[1], score)
-            if c.vertical == "auto":                                        # one encode of the suggested trim, vertical
+            if c.vertical == "auto":                                        # ready-to-post 9:16 of the suggested trim
+                layout = LayoutStore(self.root).get(self.label)
+                if not layout and not self._warned_layout:
+                    self._warned_layout = True
+                    log.info("[%s] no webcam/gameplay layout saved yet: vertical clips use a blurred full frame. "
+                             "Open the review page and press 'Set layout' once for this channel.", self.label)
                 fin = out.with_name(f"{cid}_vertical.mp4")
-                if export_clip(out, fin, sug[0], sug[1], c, vertical=True):
-                    meta["exports"].append({"file": fin.name, "start": sug[0], "end": sug[1], "vertical": True, "captions": False})
-                    out.with_suffix(".clip.json").write_text(json.dumps(meta, indent=1, ensure_ascii=False), encoding="utf-8")
+                if export_clip(out, fin, sug[0], sug[1], c, vertical=True, layout=layout):
+                    meta["exports"].append({"file": fin.name, "start": sug[0], "end": sug[1], "vertical": True,
+                                            "captions": False, "layout": (layout or {}).get("mode", c.vertical_mode)})
+                    tmp.write_text(json.dumps(meta, indent=1, ensure_ascii=False), encoding="utf-8")
+                    tmp.replace(out.with_suffix(".clip.json"))
+                    log.info("[%s] vertical ready: %s", self.label, fin.name)
         except Exception:
             log.exception("[%s] cut failed", self.label)
