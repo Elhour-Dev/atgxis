@@ -47,9 +47,9 @@ def ffprobe_exe() -> str:
     return shutil.which("ffprobe") or "ffprobe"
 
 
-def streamlink_cmd(url: str, quality: str) -> list[str]:
+def streamlink_cmd(url: str, quality: str, loglevel: str = "info") -> list[str]:
     exe = shutil.which("streamlink") or "streamlink"
-    return [exe, "--stdout", "--loglevel", "info", "--retry-streams", "5", "--retry-max", "3", url, quality]
+    return [exe, "--stdout", "--loglevel", loglevel, "--retry-streams", "5", "--retry-max", "3", url, quality]
 
 
 def segmenter_cmd(cfg: Config) -> list[str]:
