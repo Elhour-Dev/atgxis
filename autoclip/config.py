@@ -47,6 +47,7 @@ class Config:
     pre_s: int = 30             # draft context before the spike (free in copy mode; lets you slide the window earlier)
     post_s: int = 12
     max_clip_s: int = 120
+    min_clip_s: int = 15        # a moment is still clipped when the buffer holds less than half the window, as long as this many seconds of video exist
     reaction_lag_s: int = 10    # chat reacts this long after the moment; used to place the 30 s window
     lead_in_s: int = 5          # plus this much lead-in before the moment
     dup_overlap: float = 0.6    # skip a clip that overlaps an existing one by this much

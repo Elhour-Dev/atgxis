@@ -40,6 +40,15 @@ def test_draft_refuses_uncovered_window(tmp_path):
     assert cut_draft(segs, 2000.0, 2030.0, tmp_path / "x.mp4") is None
 
 
+def test_short_buffer_still_gives_a_clip_when_it_holds_enough_video(tmp_path):
+    segs = make_segments(tmp_path, n=12)                               # 24 s of video (1000-1024) ...
+    wide = (1000.0 - 60, 1024.0 + 20)                                  # ... for a 104 s window: 23% covered, the old rule skipped it
+    out = tmp_path / "p.mp4"
+    assert cut_draft(segs, *wide, out) is not None and out.exists()
+    assert cut_draft(segs, *wide, tmp_path / "q.mp4", min_s=40) is None    # below the minimum: still skipped
+    assert cut_draft(make_segments(tmp_path / "s", n=2) if (tmp_path / "s").mkdir() is None else None, 900.0, 1100.0, tmp_path / "r.mp4") is None  # 8 s: too little
+
+
 def _draft(tmp_path):
     out = tmp_path / "d.mp4"
     cut_draft(make_segments(tmp_path, n=10), 1000.0, 1020.0, out)

@@ -288,7 +288,7 @@ class ChannelWorker(threading.Thread):
                 sug_a = sa - d0
                 moment = sp.onset - d0
             else:
-                res = cut_draft(segs, a, b, out)
+                res = cut_draft(segs, a, b, out, c.min_clip_s)
                 if not res:
                     self._count("failed_cuts")
                     self._unclaim(a, b)
