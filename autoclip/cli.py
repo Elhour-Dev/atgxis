@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import logging
+import re
 import shutil
 import subprocess
 import sys
@@ -31,6 +32,71 @@ def _setup_logging():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
 
 
+def diagnose_stream(messages: str, got_bytes: int, seconds: float) -> list[str]:
+    """What a test of one channel means, in plain words (pure: unit-tested)."""
+    low = messages.lower()
+    if got_bytes > 200_000:
+        return [f"OK: video arrives ({got_bytes * 8 / 1e6 / max(seconds, 1):.1f} Mbit/s). Recording this channel works from this PC right now."]
+    out = ["NO VIDEO arrived."]
+    if re.search(r"no playable streams|offline|not found|unable to find|could not find", low):
+        out.append("Twitch reports the channel as offline (or the name is wrong). Open the channel in your browser to check.")
+    if re.search(r"advert|pre-?roll|mid-?roll|commercial", low):
+        out.append("An ad break is running: streamlink pauses during it. Try again in a minute. If every try ends in an ad break, tell me.")
+    if re.search(r"403|401|forbidden|unauthori[sz]ed|login|subscriber|geo|not available in your", low):
+        out.append("Twitch refuses access (login/subscription needed, or this network or region is blocked).")
+    if re.search(r"timed out|timeout|connection|name or service|getaddrinfo|resolve|network|ssl|reset by peer", low):
+        out.append("Network problem between this PC and Twitch (timeouts / DNS). Same family as the chat timeouts: check a VPN, firewall or "
+                   "antivirus web protection, try DNS 1.1.1.1, or test on another network (phone hotspot).")
+    if len(out) == 1:
+        out.append("No clear reason in streamlink's messages.")
+    out.append("Also try updating streamlink (Twitch changes often, old versions break):  winget upgrade Streamlink.Streamlink")
+    return out
+
+
+def cmd_check(args) -> int:
+    """Ask streamlink for a few seconds of one channel, exactly like the recorder does, and say what happened."""
+    from .recorder import kill, streamlink_cmd
+    cfg = _load_cfg(args)
+    try:
+        _, label, url = parse_target(args.target)
+    except ValueError as e:
+        print(f"ERROR: {e}")
+        return 2
+    exe = shutil.which("streamlink")
+    if not exe:
+        print("streamlink is MISSING -> winget install Streamlink.Streamlink  (then reopen PowerShell)")
+        return 1
+    ver = subprocess.run([exe, "--version"], capture_output=True, text=True, errors="replace").stdout.strip()
+    print(f"{ver or 'streamlink (version unknown)'}\nTesting {label}: asking for {args.seconds:g} s of video (quality {cfg.quality}) ...")
+    proc = subprocess.Popen(streamlink_cmd(url, cfg.quality), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    got, lines = [0], []
+
+    def pump_out():
+        while chunk := proc.stdout.read(65536):
+            got[0] += len(chunk)
+
+    def pump_err():
+        for raw in iter(proc.stderr.readline, b""):
+            lines.append(raw.decode("utf-8", "replace").rstrip())
+
+    pumps = [threading.Thread(target=pump_out, daemon=True), threading.Thread(target=pump_err, daemon=True)]
+    for t in pumps:
+        t.start()
+    t0 = time.time()
+    while time.time() - t0 < args.seconds and proc.poll() is None:
+        time.sleep(0.2)
+    kill(proc)
+    for t in pumps:
+        t.join(3)
+    took = max(time.time() - t0, 0.5)
+    msgs = "\n".join(lines)
+    print(f"\nstreamlink said:\n" + ("\n".join("  " + ln for ln in lines[-12:]) if lines else "  (nothing)"))
+    print(f"\nreceived {got[0] / 1e6:.2f} MB in {took:.0f} s\n")
+    verdict = diagnose_stream(msgs, got[0], took)
+    print("\n".join(verdict))
+    return 0 if got[0] > 200_000 else 1
+
+
 def cmd_doctor(_args) -> int:
     ok = True
     print(f"Python {sys.version.split()[0]}", "OK" if sys.version_info >= (3, 11) else "NEEDS 3.11+")
@@ -40,6 +106,9 @@ def cmd_doctor(_args) -> int:
                             ("yt-dlp", False, "winget install yt-dlp.yt-dlp   (only needed for YouTube channel/@handle links)")]:
         p = shutil.which(exe)
         print(f"{exe:11s}", p or f"MISSING -> {hint}")
+        if p and exe == "streamlink":
+            v = subprocess.run([p, "--version"], capture_output=True, text=True, errors="replace").stdout.strip()
+            print(f"{'':11s}", v or "(version unknown)", "  <- if recording fails, update: winget upgrade Streamlink.Streamlink")
         ok &= bool(p) or not need
     has = importlib.util.find_spec("chat_downloader") is not None
     print(f"{'chat-downloader':11s}", "OK" if has else "missing (only needed for YouTube): pip install chat-downloader")
@@ -269,6 +338,10 @@ def main(argv=None) -> int:
     v.add_argument("--out")
     v.add_argument("--port", type=int, default=8765)
     v.add_argument("--no-browser", action="store_true")
+    k = sub.add_parser("check", help="test one channel: can streamlink get video from it on this PC right now?")
+    k.add_argument("target", help="twitch name / twitch.tv link / youtube live link")
+    k.add_argument("--seconds", type=float, default=20)
+    k.add_argument("--out")
     c = sub.add_parser("connect", help="guided setup for automatic posting to YouTube / Instagram / TikTok")
     c.add_argument("platform", nargs="?", choices=PLATFORM_CHOICES, help="open the guide for this platform (default: all)")
     c.add_argument("--out")
@@ -277,4 +350,4 @@ def main(argv=None) -> int:
     d = sub.add_parser("demo", help="offline self-test with fake video and chat")
     d.add_argument("--out")
     args = ap.parse_args(argv)
-    return {"doctor": cmd_doctor, "run": cmd_run, "review": cmd_review, "connect": cmd_connect, "demo": cmd_demo}[args.cmd](args)
+    return {"doctor": cmd_doctor, "run": cmd_run, "review": cmd_review, "connect": cmd_connect, "check": cmd_check, "demo": cmd_demo}[args.cmd](args)

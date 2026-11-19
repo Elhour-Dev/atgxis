@@ -94,7 +94,7 @@ class ChannelWorker(threading.Thread):
         self.clips_made = 0
         self.last_clip_at = 0.0
         self.root = out_root
-        self.snapshot: dict = {"label": self.label, "video": "waiting", "msgs_per_min": 0, "normal": 0.0, "warmup_left": cfg.warmup_s, "chat_ok": True,
+        self.snapshot: dict = {"label": self.label, "video": "waiting", "msgs_per_min": 0, "normal": 0.0, "warmup_left": cfg.warmup_s, "chat_ok": True, "ad": False,
                                "spikes": 0, "clips": 0, "last_clip": ""}            # refreshed by this thread, read by the status overview
         self._snap_at, self._snap_msgs = time.time(), 0
 
@@ -156,7 +156,7 @@ class ChannelWorker(threading.Thread):
         self._snap_at, self._snap_msgs = now, msgs
         self.snapshot = {"label": self.label, "video": "live" if self.recorder.live.is_set() else "waiting",
                          "msgs_per_min": round(rate), "normal": self.detector.normal_level(),
-                         "warmup_left": self.detector.warmup_left(), "chat_ok": self._chat_connected(), "spikes": self.stats["spikes"], "clips": self.clips_made,
+                         "warmup_left": self.detector.warmup_left(), "chat_ok": self._chat_connected(), "ad": self.recorder.paused_for_ad, "spikes": self.stats["spikes"], "clips": self.clips_made,
                          "last_clip": time.strftime("%H:%M", time.localtime(self.last_clip_at)) if self.last_clip_at else ""}
 
     def _shutdown(self):
@@ -203,7 +203,8 @@ class ChannelWorker(threading.Thread):
     def status_line(self) -> str:
         s = self.snapshot
         if s["video"] != "live":
-            body = "video: waiting (stream offline or connecting)"
+            body = ("video: PAUSED BY A TWITCH AD BREAK (waiting for it to end)" if s.get("ad")
+                    else "video: waiting (stream offline, connecting or reconnecting)")
         elif not s.get("chat_ok", True):
             body = "CHAT RECONNECTING (video is still recording, spikes cannot be detected until chat is back)"
         elif s["warmup_left"] > 0:

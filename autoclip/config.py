@@ -73,6 +73,8 @@ class Config:
     # --- recording ---
     quality: str = "best"       # the stream's top quality (usually 1080p60). Recording is stream copy: no CPU cost, ~0.7 GB per 10 min
     segment_s: int = 4
+    stall_s: int = 45           # no new video for this long = dead connection: restart the capture
+    ad_stall_s: int = 240       # ...but while Twitch is showing an ad break (streamlink pauses on purpose) wait up to this long
     buffer_s: int = 600         # rolling buffer length on disk
     buffer_dir: str = ""        # default: system temp folder
     out_dir: str = "clips"      # drafts + review page live here
