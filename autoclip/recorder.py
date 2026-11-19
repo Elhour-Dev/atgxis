@@ -152,6 +152,8 @@ class Recorder(threading.Thread):
             finally:
                 kill(sp)
                 kill(fp)
+        if not produced:                              # offline check that recorded nothing: no folder + logs left behind per check
+            shutil.rmtree(run_dir, ignore_errors=True)
         return produced
 
     @staticmethod

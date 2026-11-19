@@ -30,6 +30,8 @@ vertical = "on_demand"              # "auto" also exports a 9:16 of every sugges
 # --- housekeeping ---
 out_dir = "clips"
 max_clips_gb = 20
+# min_free_gb = 3            # stop cutting when the drive holding the clips has less free space than this
+# keep_awake = true          # Windows: keep the PC from going to sleep while clipping
 # buffer_dir = "D:/autoclip_buffer"  # put the 10-minute rolling buffer on a fast/large drive
 
 # bots = ["nightbot", "my_custom_bot"]   # replaces the built-in list, so include the defaults you still want

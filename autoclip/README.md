@@ -58,6 +58,25 @@ mixed). Each stream gets its own recorder, chat reader and baseline, so a quiet 
 Rule of thumb: the limits are your download speed and disk, not the program. Add `quality = "720p60,720p,best"` to `config.toml` to halve both
 (clips will be softer).
 
+## Leaving it running all day (school / work)
+* **Start it, check the first minutes, then leave it.** After about 90 s the status block shows each stream's chat level; spikes and clips
+  appear in it with the time of the last clip, plus the disk state. Everything is also in `autoclip.log` in the clips folder.
+* **The PC must stay awake.** On Windows the program asks Windows not to sleep from idleness (`keep_awake = true`). It cannot stop sleep that
+  you cause: closing the laptop lid or choosing Sleep stops all recording. Set Power options > "When plugged in, put the computer to sleep" to
+  *Never* for the day, and keep a laptop plugged in.
+* **Stop it with Ctrl+C**, not by closing the window. Closing the window kills it instantly; the video buffer of that run (about 0.7 GB per
+  stream) is left in your temp folder. The next start deletes such leftovers automatically (only `autoclip_buf_*` folders nothing has written
+  to for 15 minutes).
+* **Disk.** A busy day can make hundreds of clips (a 1080p60 clip is about 40 MB as a draft plus 25 MB as 9:16). The program stops cutting, and
+  says so in the status block and the log, when the clips folder passes `max_clips_gb` (20) or the drive has less than `min_free_gb` (3) free.
+  Nothing is deleted for you. Raise the limit, or Trash clips in the review page and press "Delete trashed files".
+* **An offline streamer** costs almost nothing: it is checked about once a minute and leaves no files behind. If chat spikes while there is no
+  video, that is logged as "no video" (not a failed cut).
+* Measured on a synthetic run (2 streams, repeated spikes, 9:16 renders on): memory stayed flat (about 22 MB), threads and open files stayed
+  constant, the rolling buffer stayed bounded, no cut failed. The review page lists 1,500 clips in about 75 ms.
+* The 9:16 renders use the layout you saved for that streamer when the render *starts*. Clips made before you set a layout use the blurred
+  full-frame look; press **Export clip** on them later to re-render with the layout.
+
 ## How it avoids the usual problems
 
 | Problem | What it does |

@@ -18,6 +18,7 @@ from .chat import TwitchChat, YouTubeChat
 from .config import Config
 from .cutter import cut_clip, cut_draft, draft_offset, export_clip, loudness_jump, probe_duration, probe_size
 from .describe import suggest as suggest_description
+from .disk import clips_gb, free_gb
 from .detector import ChatEvent, Spike, SpikeDetector
 from .lanes import Lanes
 from .layout import LayoutStore
@@ -56,36 +57,6 @@ def fit_window(start: float, dur: float, length: float) -> tuple[float, float]:
     return round(start, 1), round(start + length, 1)
 
 
-def _dir_gb(p: Path) -> float:
-    total = 0
-    if p.exists():
-        for f in p.rglob("*"):
-            try:
-                if f.is_file():
-                    total += f.stat().st_size
-            except OSError:                      # a file vanished mid-scan (another stream's temp file)
-                pass
-    return total / 1e9
-
-
-_SIZE_CACHE: dict[str, tuple[float, float]] = {}
-_SIZE_LOCK = threading.Lock()
-
-
-def clips_gb(p: Path, max_age: float = 30.0) -> float:
-    """Size of the clips folder in GB, re-measured at most every `max_age` s. Every stream checks it before every cut, and
-    walking a folder with hundreds of clips for each of them is real disk work; the limit is soft, so 30 s old is fine."""
-    key, now = str(p), time.time()
-    with _SIZE_LOCK:
-        hit = _SIZE_CACHE.get(key)
-        if hit and now - hit[0] < max_age:
-            return hit[1]
-    gb = _dir_gb(p)
-    with _SIZE_LOCK:
-        _SIZE_CACHE[key] = (time.time(), gb)
-    return gb
-
-
 class ChannelWorker(threading.Thread):
     def __init__(self, cfg: Config, target: str, out_root: Path, stop: threading.Event,
                  source_cmd: list[str] | None = None, chat_factory: Callable[[Callable], threading.Thread] | None = None,
@@ -112,7 +83,7 @@ class ChannelWorker(threading.Thread):
         self._lock = threading.Lock()             # recent + stats: drafts of one stream can now be cut at the same time
         self._warned_layout = False
         self.stats = {"spikes": 0, "near_misses": 0, "clips": 0, "skipped_duplicates": 0, "failed_cuts": 0,
-                      "verticals": 0, "left_as_drafts": 0}
+                      "verticals": 0, "left_as_drafts": 0, "skipped_disk": 0, "no_video": 0}
         self.meter = None
         if cfg.audio_assist:
             self.meter = AudioMeter(self.events.put, stop)
@@ -120,9 +91,10 @@ class ChannelWorker(threading.Thread):
         self.pending: list[tuple[float, float, float, Spike]] = []   # (cut_at, a, b, spike)
         self._jobs: list[Future] = []
         self.clips_made = 0
+        self.last_clip_at = 0.0
         self.root = out_root
         self.snapshot: dict = {"label": self.label, "video": "waiting", "msgs_per_min": 0, "normal": 0.0, "warmup_left": cfg.warmup_s,
-                               "spikes": 0, "clips": 0}            # refreshed by this thread, read by the status overview
+                               "spikes": 0, "clips": 0, "last_clip": ""}            # refreshed by this thread, read by the status overview
         self._snap_at, self._snap_msgs = time.time(), 0
 
     # ---- main loop ---------------------------------------------------------------------------
@@ -168,7 +140,8 @@ class ChannelWorker(threading.Thread):
         self._snap_at, self._snap_msgs = now, msgs
         self.snapshot = {"label": self.label, "video": "live" if self.recorder.live.is_set() else "waiting",
                          "msgs_per_min": round(rate), "normal": self.detector.normal_level(),
-                         "warmup_left": self.detector.warmup_left(), "spikes": self.stats["spikes"], "clips": self.clips_made}
+                         "warmup_left": self.detector.warmup_left(), "spikes": self.stats["spikes"], "clips": self.clips_made,
+                         "last_clip": time.strftime("%H:%M", time.localtime(self.last_clip_at)) if self.last_clip_at else ""}
 
     def _shutdown(self):
         """Ctrl+C: a spike that was found but still waiting for its post-roll is cut NOW from what the buffer holds (it used
@@ -219,7 +192,7 @@ class ChannelWorker(threading.Thread):
             body = f"learning normal chat level ({s['warmup_left']}s left)"
         else:
             body = f"chat {s['msgs_per_min']} msg/min (normal {s['normal']:.0f} chatters)"
-        return f"{self.label:<18s} {body}  | spikes {s['spikes']}, clips {s['clips']}"
+        return f"{self.label:<18s} {body}  | spikes {s['spikes']}, clips {s['clips']}" + (f" (last {s['last_clip']})" if s["last_clip"] else "")
 
     # ---- cutting -----------------------------------------------------------------------------
     def _copy_final(self, f: Path) -> str | None:
@@ -248,7 +221,7 @@ class ChannelWorker(threading.Thread):
         with self._lock:
             if self._duplicate(a, b):
                 return False
-            self.recent.append((a, b))
+            self.recent = self.recent[-199:] + [(a, b)]          # only recent clips can overlap a new one: keep the list short all day
             return True
 
     def _unclaim(self, a: float, b: float):
@@ -266,6 +239,12 @@ class ChannelWorker(threading.Thread):
         try:
             if clips_gb(self.root) > c.max_clips_gb:
                 log.warning("[%s] clips folder over %.0f GB; not cutting (raise max_clips_gb or purge)", self.label, c.max_clips_gb)
+                self._count("skipped_disk")
+                return
+            free = free_gb(self.root)
+            if free is not None and free < c.min_free_gb:
+                log.warning("[%s] only %.1f GB free on the clips drive (min_free_gb = %g); not cutting. Free up space.", self.label, free, c.min_free_gb)
+                self._count("skipped_disk")
                 return
             if not self._claim(a, b):
                 log.info("[%s] skipped a clip that mostly repeats the previous one", self.label)
@@ -276,6 +255,11 @@ class ChannelWorker(threading.Thread):
             cid = "clip_" + datetime.fromtimestamp(sp.onset).strftime("%H%M%S")
             out = self.out_dir / f"{cid}.mp4"
             segs = self.recorder.segments_between(a, b)
+            if not segs:                                        # chat went wild but there is no video: stream offline / reconnecting
+                log.info("[%s] chat spiked but there is no video in the buffer for that moment (stream offline or reconnecting): skipped", self.label)
+                self._unclaim(a, b)
+                self._count("no_video")
+                return
             sa, sb = suggest_window(sp, c)                      # the 30 s window (wall-clock)
             if c.cut_mode == "encode":
                 if not cut_clip(segs, a, b, out, c):
@@ -311,6 +295,7 @@ class ChannelWorker(threading.Thread):
             with self._lock:
                 self.clips_made += 1
                 self.stats["clips"] += 1
+                self.last_clip_at = time.time()
             log.info("[%s] saved %s  draft %.0fs, suggested trim %.0f-%.0fs, score %.0f", self.label, out.name, dur, sug[0], sug[1], score)
             if c.vertical == "auto":                                        # ready-to-post 9:16 of the suggested trim
                 self._queue_vertical(out, cid, sug, score)

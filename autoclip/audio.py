@@ -51,6 +51,9 @@ class AudioMeter(threading.Thread):
                 seg = self.q.get(timeout=1)
             except queue.Empty:
                 continue
-            db = mean_volume(seg.path)
-            if db is not None:
-                self.sink(ChatEvent(t=(seg.t0 + seg.t1) / 2, kind="audio", db=db))
+            try:
+                db = mean_volume(seg.path)
+                if db is not None:
+                    self.sink(ChatEvent(t=(seg.t0 + seg.t1) / 2, kind="audio", db=db))
+            except Exception:                      # skip this segment; the thread must live on
+                log.exception("audio level of %s could not be measured", seg.path.name)
