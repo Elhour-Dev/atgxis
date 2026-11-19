@@ -41,6 +41,7 @@ python -m autoclip review                                   # later: opens the r
 * In the review page (ranked best-first) each draft opens already trimmed to a **suggested 30 s window**. Fine-tune with the
   *start = player* / *end = player* buttons (the player loops your trim), tick **Vertical 9:16** and/or **Captions**, and press
   **Export clip**: ONE encode does the exact trim + layout + captions. Then **Keep / Trash**; "Delete trashed files" frees disk.
+  Keep / Trash also teach the [🤖 Autopilot](#-autopilot-it-learns-what-you-keep-and-posts-the-good-ones-for-you), which can learn your taste and post the good clips for you.
 
 ## Several streams at once
 `python -m autoclip run shroud xqc https://www.youtube.com/watch?v=VIDEOID` watches every stream at the same time (Twitch and YouTube can be
@@ -174,6 +175,54 @@ What each platform really allows (so there are no surprises):
 
 These three uploaders were built from the platforms' published API behaviour and tested against a simulated server, not against your live
 accounts. If one of them reports an error, the message says why; use the Share assistant for that platform and tell me the message.
+
+## 🤖 Autopilot: it learns what you keep and posts the good ones for you
+Every **Keep** and **Trash** you press in the review page teaches it what you like. Once it has proved it can tell your good clips from
+your bad ones, it can post the clips it is sure about **without you pressing anything**. It starts **off**.
+
+**What it learns from.** Keep (a good clip), Trash (a bad one), and clips you post yourself (counted as a Keep, but a Trash always wins).
+*Undo* withdraws a decision. It never learns from its own posts (it would only agree with itself), but it *does* learn when you judge them.
+Decisions are kept in your settings folder (`%APPDATA%\autoclip\taste\`), not with the clips, so **Delete trashed files does not make it
+forget**. Keeps and Trashes you made before this feature existed are taken over automatically the first time.
+
+**What it looks at.** Only what was measured about the clip: how big the chat spike was against normal, how loud the stream got, the
+streamer, which reaction it was, and which words chat was spamming (e.g. it can learn "I keep KEKW clips from X and trash the rest"). It
+**cannot see the video**: if you choose by what happens on screen, it can only follow that as far as chat reacts to it.
+
+**Using it.** Press **🤖 Autopilot** in the review page.
+1. Keep reviewing. Each card shows `🤖 87%` (hover for *why*: streamer, chat words, loudness). **Autopilot pick first** sorts by it.
+2. The window shows what it learned and a table of what each confidence level *would have done on clips you already judged* (clips it did not
+   learn from), so you see the real hit rate before trusting it.
+3. Pick **Suggest only** first: it marks the clips it would post, posts nothing, and you can check its taste against yours.
+4. Then **Post automatically**: tick the platforms, the **streamers** (only ones whose clips you are allowed to post: publishing someone
+   else's stream needs their permission), and press Save. It posts while `python -m autoclip run` is running, or on its own with
+   `python -m autoclip autopilot run`. `python -m autoclip autopilot status` explains where it stands in plain words.
+
+**When it is allowed to post.** All of these, checked on predictions for clips the model had never seen while learning
+(cross-validation):
+* at least 30 decisions, 8 or more of each kind; it must rank your kept clips above your trashed ones clearly better than chance;
+* at some confidence level it must have been right at least **85%** of the time (you can change this) on **at least 20** such clips, judged
+  by the *lower* confidence bound (a lucky streak is not proof) **and** its own average predicted chance must agree;
+* the clip must be at least that confident. If no level passes, it says why and does nothing.
+
+These numbers come from simulations I ran with made-up users (not real people), so treat them as a guide: a user with a clear taste
+unlocked after roughly 300-600 decisions and was right 81-91% of the time on new clips; a user whose choices followed no pattern was **never**
+unlocked (0 of 120 runs). The first version of the gate was fooled by short lucky streaks (12 right out of 12); that is why it needs 20+ clips
+and two agreeing checks. Lowering "required accuracy" in the window unlocks it sooner and makes wrong posts more likely.
+
+**Safety rules (enforced in the program, not just the page).**
+* A waiting time (default 10 min) before each post: it is marked on the card ("posts at 14:32 unless you Trash it") with a **Don't post** button.
+* At most 3 posts per 24 h and 60 min apart (both adjustable); clips older than 24 h are never posted.
+* Only the channels and platforms you ticked, only through a *connected* account, only a 9:16 export of the suggested trim (it makes one if
+  the recorder has not). The Share assistant (which needs you) is never used.
+* Never twice: a platform that already has the clip (posted by you or earlier) is skipped. If the program dies *while* sending, that clip is
+  **not** retried by itself, because it may have gone out. A failed post is retried once after 15 min, then given up on.
+* **Circuit breaker:** if you trash 30% or more of its last posts that you judged (at least 5), it switches itself to *Suggest only* and says why.
+* Everything it does is recorded in `autopilot_log.jsonl` next to your settings, and on each clip's card.
+
+**Limits.** It posts through the same code as the Share button: that code has been tested against simulated platform servers, not your live
+accounts, and the autopilot itself is tested with a stand-in provider. Check the first posts yourself. Posting other people's streams without
+their permission can get you struck or banned whatever the program thinks of the clip.
 
 ## Vertical clips: webcam on top, gameplay below (Reels / TikTok / Shorts)
 Every clip is exported **automatically as a ready 1080x1920, 30 fps, exactly 30 s video**. Until you teach it where a streamer's

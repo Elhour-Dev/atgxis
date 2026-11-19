@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from . import settings
+from . import settings, taste
 
 PLATFORMS: dict[str, dict] = {
     "tiktok": {"label": "TikTok", "url": "https://www.tiktok.com/tiktokstudio/upload", "text_max": 2200},
@@ -119,6 +119,7 @@ class ShareRequest:
     texts: dict[str, dict] = field(default_factory=dict)       # {platform: {"title":..., "body":...}}
     provider: str = "assistant"
     force: bool = False
+    actor: str = "you"            # "autopilot" for posts made without you: those never count as your taste (see taste.py)
 
 
 def run(store, req: ShareRequest) -> dict[str, dict]:
@@ -155,23 +156,27 @@ def run(store, req: ShareRequest) -> dict[str, dict]:
     if problems:                                               # nothing is posted if ANY platform fails validation
         raise ShareError(" | ".join(problems))
     results: dict[str, dict] = {}
+    learned = False
     for job in jobs:
         try:
             r = prov.publish(job)
         except Exception as e:                                 # one platform failing must not stop or hide the others
             r = Result(False, "failed", f"{type(e).__name__}: {e}")
         results[job.platform] = {"status": r.status, "message": r.message, "url": r.url, "ok": r.ok, "title": job.title, "text": job.text}
-        record(store, req.clip_id, job.platform, r, prov.name, ex["file"])
+        record(store, req.clip_id, job.platform, r, prov.name, ex["file"], req.actor)
+        if req.actor == "you" and r.status in ("done", "draft") and not learned:
+            learned = True                                     # once per share, however many platforms
+            taste.record(meta, 1, "posted")                    # you chose to post it: a Keep (never overrides an explicit Trash)
     return results
 
 
-def record(store, clip_id: str, platform: str, r: Result, provider: str, file: str) -> None:
+def record(store, clip_id: str, platform: str, r: Result, provider: str, file: str, actor: str = "you") -> None:
     with store.lock:
         p, m = store.find(clip_id)
         if not p:
             return
         m.setdefault("shares", {})[platform] = {"status": r.status, "message": r.message, "url": r.url, "provider": provider,
-                                                "file": file, "at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+                                                "file": file, "actor": actor, "at": time.strftime("%Y-%m-%dT%H:%M:%S")}
         from .review import _write_json
         _write_json(p, m)
 
@@ -193,4 +198,6 @@ def mark(store, clip_id: str, platform: str, status: str) -> bool:
                                 "at": time.strftime("%Y-%m-%dT%H:%M:%S"), "message": "marked as posted"}
         from .review import _write_json
         _write_json(p, m)
+    if status == "done":
+        taste.record(m, 1, "posted")                           # you posted it yourself: counts as a Keep
     return True

@@ -144,6 +144,9 @@ def cmd_doctor(_args) -> int:
     from . import accounts
     have = [p for p in PLATFORM_CHOICES if accounts.connected(p)]
     print("auto-posting accounts:", ", ".join(have) if have else "none connected (optional): python -m autoclip connect")
+    from . import autopilot, taste
+    c, a = taste.counts(), autopilot.load()
+    print(f"autopilot: {a['mode']} | learned from {c['total']} decisions ({c['keeps']} kept, {c['trashes']} trashed)")
     print("\nAll required tools found." if ok else "\nFix the MISSING items above, then run doctor again.")
     return 0 if ok else 1
 
@@ -258,6 +261,7 @@ def cmd_run(args) -> int:
         w.start()
         time.sleep(1)                             # stagger the connections (chat servers and streamlink dislike a burst)
     print(f"Clipping {len(workers)} stream(s).  Review later with:  python -m autoclip review\nCtrl+C to stop.")
+    start_autopilot(cfg, stop)
     next_status = time.time() + max(cfg.status_every_s, 1)
     try:
         while any(w.is_alive() for w in workers):
@@ -277,6 +281,65 @@ def cmd_run(args) -> int:
     dropped = lanes.shutdown(cancel_queued_encodes=stop.is_set())
     if dropped:
         print(f"{dropped} queued 9:16 render(s) were skipped: those clips are still there as drafts, press Export in the review page.")
+    return 0
+
+
+def start_autopilot(cfg, stop: threading.Event):
+    """The autopilot thread lives inside `run`, so a clip can be posted while you are away. It idles when the mode is off, and picks up a
+    change made in the review page within 30 s."""
+    from . import autopilot
+    from .review import Store
+    mode = autopilot.load()["mode"]
+    autopilot.Autopilot(Store(Path(cfg.out_dir), cfg), stop).start()
+    print(f"Autopilot: {mode}" + {"off": " (it only learns from your Keep / Trash; switch it on in the review page: 🤖 Autopilot)",
+                                   "suggest": " (it marks the clips it would post; nothing is posted)",
+                                   "post": " (it posts the clips it is sure about, within the limits you set)"}[mode])
+
+
+def autopilot_report(st: dict) -> list[str]:
+    """Plain-language status of the learning and the autopilot (pure: unit-tested)."""
+    c, s, r = st["counts"], st["settings"], st["ready"]
+    out = [f"Learned from {c['total']} decisions: {c['keeps']} kept, {c['trashes']} trashed."]
+    if st["model"] and st["model"].get("auc") is not None:
+        out.append(f"On clips it had not seen while learning, it ranks a kept clip above a trashed one {st['model']['auc']:.0%} of the time (50% = guessing).")
+    for x in st["curve"]:
+        if x["picked"]:
+            out.append(f"  sure >= {x['at']:.0%}: would pick {x['picked']} of your clips, you agreed with {x['agreed']} ({x['precision']:.0%})")
+    out.append(f"Ready to post: yes, from {r['threshold']:.0%} sure (it was right {r['hits']}/{r['support']} on past clips)" if r["ok"]
+               else f"Ready to post: no. {r['reason']}")
+    out.append(f"Mode: {s['mode']}" + (f"  (PAUSED: {s['paused_reason']})" if s["paused_reason"] else ""))
+    if s["mode"] == "post" or s["platforms"] or s["channels"]:
+        out.append(f"  platforms: {', '.join(s['platforms']) or 'none ticked'} via {s['provider']} | streamers: {', '.join(s['channels']) or 'none ticked'}")
+        out.append(f"  limits: {s['max_per_day']} per 24 h, {s['gap_min']} min apart, {s['delay_min']} min veto time | posted in the last 24 h: {st['posted_24h']}")
+    for q in st["queue"]:
+        out.append(f"  waiting: {q['channel']} {q['id']} ({q['p']:.0%} sure)")
+    return out
+
+
+def cmd_autopilot(args) -> int:
+    from . import autopilot, taste
+    from .review import Store
+    cfg = _load_cfg(args)
+    store = Store(Path(cfg.out_dir), cfg)
+    n = taste.import_existing(store.root)
+    if n:
+        print(f"Took over {n} earlier Keep / Trash decision(s) from your clip files.")
+    if args.action == "train" or (taste.is_stale() and args.action != "run"):
+        m = taste.train()
+        print(f"Learned from {m['n']} decisions." if m["state"] != "none" else m["reason"])
+    if args.action in ("status", "train"):
+        print("\n".join(autopilot_report(autopilot.status(store))))
+        return 0
+    ap = autopilot.Autopilot(store)
+    if args.action == "once":
+        acts = ap.tick()
+        print("\n".join(f"{a['action']}: {a.get('clip', '')} {a.get('message', '')}".strip() for a in acts) or "Nothing to do right now.")
+        return 0
+    print(f"Autopilot ({autopilot.load()['mode']}) is running on {store.root}. Change its settings in the review page. Ctrl+C to stop.")
+    try:
+        ap.loop(30.0)
+    except KeyboardInterrupt:
+        pass
     return 0
 
 
@@ -370,7 +433,11 @@ def main(argv=None) -> int:
     c.add_argument("--out")
     c.add_argument("--port", type=int, default=8765)
     c.add_argument("--no-browser", action="store_true")
+    a = sub.add_parser("autopilot", help="what it learned from your Keep / Trash, and run the auto-poster without the clipper")
+    a.add_argument("action", nargs="?", default="status", choices=["status", "train", "run", "once"],
+                   help="status (default), train now, run (keep posting), once (one pass)")
+    a.add_argument("--out")
     d = sub.add_parser("demo", help="offline self-test with fake video and chat")
     d.add_argument("--out")
     args = ap.parse_args(argv)
-    return {"doctor": cmd_doctor, "run": cmd_run, "review": cmd_review, "connect": cmd_connect, "check": cmd_check, "demo": cmd_demo}[args.cmd](args)
+    return {"doctor": cmd_doctor, "run": cmd_run, "review": cmd_review, "connect": cmd_connect, "check": cmd_check, "autopilot": cmd_autopilot, "demo": cmd_demo}[args.cmd](args)
