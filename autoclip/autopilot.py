@@ -204,7 +204,8 @@ class Autopilot:
 
     # ---- the safety net -------------------------------------------------------------------------------
     def regret(self, metas: list) -> tuple[int, int]:
-        """(trashed, decided) among the autopilot's most recent posts that you have judged since."""
+        """(trashed, decided) among the autopilot's most recent posts that you have judged since. Only Keep and Trash are judgements:
+        "done" (posted, files deleted for space) says nothing about quality, so it is neither regret nor approval."""
         mine = [(m["autopilot"].get("at", 0), m["status"]) for _, m in metas
                 if (m.get("autopilot") or {}).get("state") == "posted" and m.get("status") in ("keep", "trash")]
         mine.sort(reverse=True)

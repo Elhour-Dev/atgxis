@@ -277,3 +277,79 @@ def test_background_training_stays_in_the_folder_it_was_scheduled_for(monkeypatc
     while not (mine / "model.json").exists() and time.time() < deadline:
         time.sleep(0.05)
     assert (mine / "model.json").exists() and not (tmp_path / "somewhere_else").exists()
+
+
+# ------------------------------------------------------------------ "Done (free space)": posted clips whose files you deleted
+def test_trash_after_you_posted_it_counts_as_keep():
+    a, b = meta(1), meta(2)
+    taste.record(a, 1, "posted", when=1)
+    taste.record(a, 0, "trash", when=2)                                                       # trashed only to free disk space
+    taste.record(b, 0, "trash", when=1)                                                       # never posted: a real Trash
+    assert {r["clip"]: r["label"] for r in taste.labels()} == {a["id"]: 1, b["id"]: 0}
+
+
+def test_done_frees_the_files_and_counts_as_keep(tmp_path):
+    root = tmp_path / "clips"
+    m = meta(1)
+    m["shares"] = {"tiktok": {"status": "done", "actor": "you", "file": "c1_v.mp4"}}
+    p = write_clip(root, m)
+    (p.parent / "c1.words.json").write_text("[]", encoding="utf-8")
+    copy = tmp_path / "final" / "c1_v.mp4"
+    copy.parent.mkdir()
+    copy.write_bytes(b"kept")
+    meta_on_disk = json.loads(p.read_text(encoding="utf-8"))
+    meta_on_disk["exports"][0]["copy"] = str(copy)
+    p.write_text(json.dumps(meta_on_disk), encoding="utf-8")
+    store = review.Store(root, Config())
+    assert store.set_status(m["id"], "done")
+    assert sorted(x.name for x in p.parent.iterdir()) == [p.name]                              # draft, export and words file are gone
+    assert copy.read_bytes() == b"kept"                                                        # the copy in the final clips folder is not
+    saved = json.loads(p.read_text(encoding="utf-8"))
+    assert saved["status"] == "done" and saved["files_deleted"] is True
+    assert [(r["label"], r["src"]) for r in taste.labels()] == [(1, "done")]
+    assert not store.set_status(m["id"], "new")                                                # its files are gone: no way back to review
+    assert store.purge() == 0 and p.exists()                                                   # "Delete trashed files" leaves it alone
+
+
+def test_done_needs_a_shared_clip(tmp_path):
+    root = tmp_path / "clips"
+    p = write_clip(root, meta(1))
+    store = review.Store(root, Config())
+    assert not store.set_status(meta(1)["id"], "done")
+    assert (p.parent / "c1.mp4").exists() and taste.labels() == []
+
+
+def test_import_repairs_trash_on_clips_you_posted(tmp_path):
+    root = tmp_path / "clips"
+    mine, auto, done, plain = meta(1, status="trash"), meta(2, status="trash"), meta(3, status="done"), meta(4, status="trash")
+    auto_done = meta(5, status="done")
+    auto_done["shares"] = {"tiktok": {"status": "done", "actor": "autopilot"}}
+    write_clip(root, auto_done)
+    done["shares"] = {"youtube": {"status": "done"}}                                            # a manual "Mark as posted": yours
+    mine["shares"] = {"youtube": {"status": "done", "actor": "you"}}
+    auto["shares"] = {"tiktok": {"status": "done", "actor": "autopilot"}}                     # its post, your Trash: a real Trash
+    for m in (mine, auto, done, plain):
+        write_clip(root, m)
+    assert taste.import_existing(root) == 4
+    assert {r["clip"]: r["label"] for r in taste.labels()} == {mine["id"]: 1, auto["id"]: 0, done["id"]: 1, plain["id"]: 0}
+
+
+def test_done_keeps_everything_when_a_file_is_locked_and_autopilot_posts_teach_nothing(tmp_path, monkeypatch):
+    root = tmp_path / "clips"
+    m = meta(1)
+    m["shares"] = {"tiktok": {"status": "done", "actor": "autopilot"}, "youtube": {"status": "opened", "actor": "you"}}
+    p = write_clip(root, m)
+    store = review.Store(root, Config())
+    real = taste.Path.unlink
+
+    def locked(self, missing_ok=False):
+        if self.name == "c1.mp4":
+            raise PermissionError("in use")
+        return real(self, missing_ok=missing_ok)
+    monkeypatch.setattr(taste.Path, "unlink", locked)
+    assert not store.set_status(m["id"], "done")                                              # nothing claimed, can be pressed again
+    saved = json.loads(p.read_text(encoding="utf-8"))
+    assert saved["status"] == "new" and saved["exports"] == []                                  # the export that did go is not listed any more
+    monkeypatch.setattr(taste.Path, "unlink", real)
+    assert store.set_status(m["id"], "done")
+    assert taste.labels() == []                                                               # Done on the Autopilot's own post: not your taste

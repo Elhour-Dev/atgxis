@@ -41,6 +41,8 @@ python -m autoclip review                                   # later: opens the r
 * In the review page (ranked best-first) each draft opens already trimmed to a **suggested 30 s window**. Fine-tune with the
   *start = player* / *end = player* buttons (the player loops your trim), tick **Vertical 9:16** and/or **Captions**, and press
   **Export clip**: ONE encode does the exact trim + layout + captions. Then **Keep / Trash**; "Delete trashed files" frees disk.
+  Posted a clip already? Press **Done (free space)** instead of Trash: it deletes that clip's draft, exports and caption data (not the
+  copy in your final clips folder), keeps it listed under "Done", and counts it as a Keep.
   Keep / Trash also teach the [🤖 Autopilot](#-autopilot-it-learns-what-you-keep-and-posts-the-good-ones-for-you), which can learn your taste and post the good clips for you.
 
 ## Several streams at once
@@ -123,6 +125,10 @@ Loudness bonus: a clip scores up to +10 if the audio is louder after the moment 
 * **Chat spike**: unique chatters in 10 s vs the channel's own normal level. The multiplier is 2.0 and eases down to 1.8 on big chats.
 * **Loud moments help**: when the stream gets 8+ dB louder than normal (streamer screaming, game explosion), chat only needs to
   be 1.35x normal. Loud audio alone never makes a clip (`audio_assist = false` turns this off).
+* **Polls are skipped**: when most of the top chat messages are poll answers (numbers like `2651` or `21+`, yes/no, left/right),
+  chat is answering a question, not reacting to a moment, so no clip is made (`skipped: chat was answering a poll` in the log).
+  W / L / GG floods still count: those are real reactions. `poll_frac = 0` turns this off.
+* **Big channels**: raise `min_users` (for example 20) so tiny chat bumps in quiet stretches do not become clips.
 * **Near-misses are logged** (`near-miss: chat 1.7x normal (needed 1.9x)`): if you see many for moments you wanted, lower `mult`.
   A session summary at the end counts spikes, near-misses, clips, skipped duplicates and failed cuts.
 * Everything is also written to `autoclip.log` in the clips folder: send that file when something looks wrong.
@@ -184,6 +190,10 @@ your bad ones, it can post the clips it is sure about **without you pressing any
 *Undo* withdraws a decision. It never learns from its own posts (it would only agree with itself), but it *does* learn when you judge them.
 Decisions are kept in your settings folder (`%APPDATA%\autoclip\taste\`), not with the clips, so **Delete trashed files does not make it
 forget**. Keeps and Trashes you made before this feature existed are taken over automatically the first time.
+**Done (free space)** on a clip you posted counts as a Keep. A Trash on a clip you posted yourself also counts as a Keep (posting it
+already said it was good; before the Done button, Trash was the only way to free the space). For the Autopilot's own posts, only your
+Trash counts against it: Done there is neither good nor bad and teaches nothing. If Done answers "failed", a video is still playing in
+the page or an export is running: pause it or wait, then press Done again (nothing was marked).
 
 **What it looks at.** Only what was measured about the clip: how big the chat spike was against normal, how loud the stream got, the
 streamer, which reaction it was, and which words chat was spamming (e.g. it can learn "I keep KEKW clips from X and trash the rest"). It

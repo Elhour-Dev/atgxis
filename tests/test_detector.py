@@ -220,3 +220,41 @@ def test_audio_meter_measures_real_segments(tmp_path):
     quiet, loud = tone("q.m4a", 0.03), tone("l.m4a", 0.6)
     assert quiet is not None and loud is not None and loud - quiet > 20
     assert mean_volume(tmp_path / "missing.ts") is None
+
+
+def test_poll_answers_are_not_a_moment():
+    spikes, d = run(Config(), burst(200, 215, text="2651"), 400)
+    assert spikes == []
+    assert any("poll" in n for n in d.pop_notes())
+    spikes, _ = run(Config(), burst(200, 215, text="yes"), 400)
+    assert spikes == []
+
+
+def test_w_flood_still_counts_and_poll_filter_can_be_turned_off():
+    assert len(run(Config(), burst(200, 215, text="wwwww"), 400)[0]) == 1
+    assert len(run(Config(poll_frac=0), burst(200, 215, text="2651"), 400)[0]) == 1
+
+
+def test_poll_share():
+    from autoclip.detector import poll_share
+    assert poll_share([("left", 64), ("cut", 40), ("right", 24)]) == pytest.approx(88 / 128)
+    assert poll_share([("lol", 25), ("bro", 10)]) == 0
+    assert poll_share([]) == 0
+
+
+def test_one_off_answers_in_varied_chat_are_not_a_poll():
+    from autoclip.detector import poll_share
+    assert poll_share([("no", 1), ("1", 1), ("what 72", 1), ("bro", 1)]) == 0
+    spikes, _ = run(Config(poll_frac=-1), burst(200, 215, text="KEKW"), 400)   # a negative value means off, not "skip all"
+    assert len(spikes) == 1
+
+
+def test_a_few_repeated_answers_in_a_busy_varied_chat_are_not_a_poll():
+    def varied(s, rnd):
+        if 200 <= s < 215:
+            msgs = [(f"v{rnd.randint(1, 400)}", f"what {rnd.randint(1, 10_000)}") for _ in range(20)]
+            if s == 200:
+                msgs = [("a1", "no"), ("a2", "no"), ("a3", "1"), ("a4", "1")] + msgs
+            return msgs
+        return quiet(s, rnd)
+    assert len(run(Config(), varied, 400)[0]) == 1

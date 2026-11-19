@@ -2,3 +2,4 @@ __pycache__/
 *.pyc
 clips/
 .pytest_cache/
+config.toml

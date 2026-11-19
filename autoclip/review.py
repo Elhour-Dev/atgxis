@@ -34,7 +34,7 @@ button{cursor:pointer} button.primary{background:var(--acc);color:#fff;border-co
 input[type=number]{width:74px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));gap:16px}
 .card{background:var(--card);border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:8px}
-.card.keep{outline:2px solid #16a34a}.card.trash{opacity:.45}
+.card.keep{outline:2px solid #16a34a}.card.trash{opacity:.45}.card.done{opacity:.8}
 video{width:100%;border-radius:8px;background:#000} .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 .score{font-weight:700;color:var(--acc);font-size:18px}.mut{color:var(--mut);font-size:13px}
 .chat{font-size:13px;background:#8881;border-radius:8px;padding:6px 8px;max-height:60px;overflow:auto}
@@ -66,7 +66,7 @@ details{background:#8881;border-radius:8px;padding:6px 8px}summary{cursor:pointe
 details input[type=text],details input[type=password],details textarea{width:100%;box-sizing:border-box;font:inherit;padding:6px;border-radius:6px;border:1px solid #8884;background:var(--bg);color:var(--fg);margin-top:6px}
 </style>
 <header><h1>Clip review</h1>
-<select id=f><option value=new>To review</option><option value=keep>Kept</option><option value=trash>Trash</option><option value=all>All</option></select>
+<select id=f><option value=new>To review</option><option value=keep>Kept</option><option value=trash>Trash</option><option value=done>Done (posted, files freed)</option><option value=all>All</option></select>
 <select id=s><option value=score>Best score first</option><option value=created>Newest first</option><option value=ap>Autopilot pick first</option></select>
 <button id=folders>📁 Folders</button><button id=quick class=primary title="Post to Instagram + TikTok with one free key">⚡ Quick connect</button><button id=accts title="YouTube and advanced: your own developer apps">🔗 Accounts</button><button id=ap title="Learns which clips you keep and can post the good ones for you">🤖 Autopilot</button><button id=purge>Delete trashed files</button><span class=mut id=count></span></header>
 <div class=grid id=g></div>
@@ -104,6 +104,12 @@ function render(){
       trims.set(c.id,{start:+a.toFixed(1),end:+b.toFixed(1),vertical:true,captions:false})}
     const t=trims.get(c.id);
     const card=el('div','card '+c.status);
+    if(c.status==='done'){                              // posted and files deleted: just what was posted and where
+      const r0=el('div','row');r0.append(el('span','score',Math.round(c.score)),el('span','mut',c.channel+' · '+c.created.replace('T',' ')+' · done, video files deleted'));card.append(r0);
+      if((c.description||{}).title)card.append(el('div',null,c.description.title));
+      for(const [k,v0] of Object.entries(c.shares||{})){const line=el('div','mut',(shareInfo.platforms[k]||{label:k}).label+': '+v0.status+' '+(v0.at||'').slice(0,16).replace('T',' '));
+        if(v0.url){const a0=el('a',null,'open');a0.href=safeUrl(v0.url);a0.target='_blank';line.append(' ',a0)}card.append(line)}
+      const s0=el('a',null,'Channel');s0.href=c.source_url;s0.target='_blank';card.append(s0);g.append(card);continue}
     const v=el('video');v.controls=true;v.preload='metadata';v.src=fileUrl(c,c.file);
     v.onloadedmetadata=()=>{v.currentTime=t.start};
     v.ontimeupdate=()=>{if(!v.paused&&v.currentTime>t.end+0.2)v.currentTime=t.start};
@@ -188,6 +194,10 @@ function render(){
     const bt=el('div','row');
     for(const [label,st] of [['Keep','keep'],['Trash','trash'],['Undo','new']]){if(st===c.status||(st==='new'&&c.status==='new'))continue;
       const x=el('button',null,label);x.onclick=async()=>{await post('/api/status',{id:c.id,status:st});load(true)};bt.append(x)}
+    if(Object.values(c.shares||{}).some(x=>['done','draft','opened'].includes(x.status))){
+      const dn=el('button',null,'Done (free space)');dn.title='Posted already: delete this clip'+String.fromCharCode(39)+'s video files here to free disk space. Counts as a Keep for learning. Copies in your final clips folder are not touched.';
+      dn.onclick=async()=>{if(!confirm('Delete the draft and export videos of this clip to free space?'+NL+NL+'It stays listed under Done (posted, files freed) and counts as a Keep. Copies in your final clips folder are kept.'))return;
+        await post('/api/status',{id:c.id,status:'done'});load(true)};bt.append(dn)}
     const src=el('a',null,'Channel');src.href=c.source_url;src.target='_blank';bt.append(src);
     card.append(bt);g.append(card)}
   if(moreBtn)g.append(moreBtn)}
@@ -539,15 +549,39 @@ class Store:
         return None, None
 
     def set_status(self, cid: str, status: str) -> bool:
-        if status not in ("new", "keep", "trash"):
+        """'done' = posted, and you want the disk space back: the draft, exports and words file are deleted (not the copies in the
+        final clips folder), the .clip.json stays, and it counts as a Keep. Only for a clip that was shared."""
+        if status not in ("new", "keep", "trash", "done"):
             return False
         with self.lock:
             p, m = self.find(cid)
             if not p:
                 return False
+            if status == "done":
+                if not any(sh.get("status") in ("done", "draft", "opened") for sh in (m.get("shares") or {}).values()):
+                    return False
+                if (self.jobs.get(cid) or {}).get("state") in ("queued", "encoding"):
+                    return False                                  # an export is still writing this clip's files
+                names = [m.get("file")] + [e.get("file") for e in m.get("exports") or []]
+                failed = False
+                for name in names + [(m.get("file") or "").replace(".mp4", ".words.json")]:
+                    if name and Path(name).name == name:          # only plain file names next to the .clip.json
+                        try:
+                            (p.parent / name).unlink(missing_ok=True)
+                        except OSError as e:                      # e.g. still playing in the page: try again in a moment
+                            print(f"could not delete {p.parent / name}: {e}")
+                            failed = True
+                if failed:                                        # status stays, so Done can be pressed again; forget exports already gone
+                    m["exports"] = [e for e in m.get("exports") or [] if (p.parent / str(e.get("file"))).is_file()]
+                    _write_json(p, m)
+                    return False
+                m["files_deleted"] = True
+            elif m.get("status") == "done":
+                return False                                      # its files are gone: it cannot go back to review
             m["status"] = status
             _write_json(p, m)
-        taste.record(m, {"keep": 1, "trash": 0}.get(status), status)           # kept in your settings folder: survives "Delete trashed files"
+        if status != "done" or taste.posted_by_you(m):                              # Done on an Autopilot-only post is no judgement of yours
+            taste.record(m, {"keep": 1, "trash": 0, "done": 1}.get(status), status)           # kept in your settings folder: survives "Delete trashed files"
         taste.retrain_soon()
         return True
 
