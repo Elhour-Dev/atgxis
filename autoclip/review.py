@@ -15,7 +15,7 @@ from .config import Config
 from .captions import CaptionsUnavailable, build_ass, cached_words, transcribe, words_in_window
 from . import layout as lay
 import html
-from . import accounts, publish, settings, share, zernio      # noqa: F401  (publish / zernio register the 'direct' / 'auto' sharing methods)
+from . import accounts, autopilot, autopilot_page, publish, settings, share, taste, zernio      # noqa: F401  (publish / zernio register the 'direct' / 'auto' sharing methods)
 from .cutter import export_clip, grab_frame, probe_size
 from .describe import suggest as suggest_description
 from .facecam import FacecamUnavailable, detect_facecam
@@ -67,8 +67,8 @@ details input[type=text],details input[type=password],details textarea{width:100
 </style>
 <header><h1>Clip review</h1>
 <select id=f><option value=new>To review</option><option value=keep>Kept</option><option value=trash>Trash</option><option value=all>All</option></select>
-<select id=s><option value=score>Best score first</option><option value=created>Newest first</option></select>
-<button id=folders>📁 Folders</button><button id=quick class=primary title="Post to Instagram + TikTok with one free key">⚡ Quick connect</button><button id=accts title="YouTube and advanced: your own developer apps">🔗 Accounts</button><button id=purge>Delete trashed files</button><span class=mut id=count></span></header>
+<select id=s><option value=score>Best score first</option><option value=created>Newest first</option><option value=ap>Autopilot pick first</option></select>
+<button id=folders>📁 Folders</button><button id=quick class=primary title="Post to Instagram + TikTok with one free key">⚡ Quick connect</button><button id=accts title="YouTube and advanced: your own developer apps">🔗 Accounts</button><button id=ap title="Learns which clips you keep and can post the good ones for you">🤖 Autopilot</button><button id=purge>Delete trashed files</button><span class=mut id=count></span></header>
 <div class=grid id=g></div>
 <script>
 let clips=[],shown=30,sig='',shareInfo={providers:[],platforms:{}};const openPost=new Map(),openShare=new Map(),NL=String.fromCharCode(10);const trims=new Map();const exUi=new Map(),exPending=new Set();const g=document.getElementById('g');
@@ -78,7 +78,7 @@ const fileUrl=(c,f)=>'/files/'+enc(c.dir)+'/'+encodeURIComponent(f);
 function el(t,c,x){const e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e}
 async function load(force){
   const next=await (await fetch('/api/clips')).json();
-  const ns=JSON.stringify(next.map(c=>[c.id,c.status,(c.exports||[]).length,c.shares||null,c.res?c.res[1]:0]));
+  const ns=JSON.stringify(next.map(c=>[c.id,c.status,(c.exports||[]).length,c.shares||null,c.res?c.res[1]:0,c.taste?c.taste.p:null,c.autopilot?c.autopilot.state:null]));
   const playing=[...document.querySelectorAll('video')].some(v=>!v.paused);
   clips=next;if(ns!==sig&&(force||!playing)){sig=ns;render()}
   for(const id of exUi.keys())paintEx(id)}                // buttons follow the SERVER state, even when a playing video holds back the redraw
@@ -94,7 +94,7 @@ function numInput(v,on){const i=el('input');i.type='number';i.step='0.1';i.min='
 function render(){
   const f=document.getElementById('f').value,s=document.getElementById('s').value;
   let list=clips.filter(c=>f==='all'||c.status===f);
-  list.sort((a,b)=>s==='score'?b.score-a.score:b.created.localeCompare(a.created));
+  list.sort((a,b)=>s==='score'?b.score-a.score:s==='ap'?((b.taste?b.taste.p:-1)-(a.taste?a.taste.p:-1)):b.created.localeCompare(a.created));
   g.replaceChildren();exUi.clear();const total=list.length;list=list.slice(0,shown);
   document.getElementById('count').textContent=(total>list.length?'showing '+list.length+' of '+total:total)+' clip(s)';
   let moreBtn=null;if(total>list.length){moreBtn=el('button','primary','Show '+Math.min(30,total-list.length)+' more');moreBtn.style.gridColumn='1/-1';moreBtn.onclick=()=>{shown+=30;render()}}
@@ -109,6 +109,7 @@ function render(){
     v.ontimeupdate=()=>{if(!v.paused&&v.currentTime>t.end+0.2)v.currentTime=t.start};
     card.append(v);
     const r=el('div','row');r.append(el('span','score',Math.round(c.score)),el('span','mut',c.channel+' · '+c.created.replace('T',' ')+' · draft '+fmt(c.duration_s)+' · moment at '+fmt(c.moment_s)+(c.res?' · source '+c.res[0]+'x'+c.res[1]:'')));card.append(r);
+    {const ab=apBadge(c);if(ab)card.append(ab)}
     if(c.res&&c.res[1]<1000)card.append(el('div','hint','⚠ Recorded at '+c.res[1]+'p, so it cannot look sharp when enlarged to 1080x1920. Clips recorded after the update use the best quality the stream offers.'));
     const sp=c.spike;card.append(el('div','mut',sp.peak+' chatters at once (normal '+Math.round(sp.baseline)+') · '+sp.msgs+' msgs'+(c.loudness_jump_db!=null?' · audio '+(c.loudness_jump_db>0?'+':'')+c.loudness_jump_db+' dB':'')));
     if(sp.top&&sp.top.length)card.append(el('div','chat',sp.top.map(x=>x[0]+' ×'+x[1]).join('   ')));
@@ -409,10 +410,13 @@ function openLayout(c,video){
     layouts[c.channel]=await r.json();msg.textContent='Saved. New clips use it automatically; press "Export clip" on an existing clip to re-render it.';load(true)};
   resetCap.onclick=()=>{C=null;renderCap()};
   sync();renderCap();loadFrame()}
+/*__AP__*/
 document.getElementById('f').onchange=()=>{shown=30;render()};document.getElementById('s').onchange=()=>{shown=30;render()};
 document.getElementById('purge').onclick=async()=>{if(confirm('Permanently delete every trashed clip file?')){await post('/api/purge',{});load(true)}};
 document.getElementById('folders').onclick=openFolders;document.getElementById('accts').onclick=openAccounts;document.getElementById('quick').onclick=openQuick;Promise.all([loadLayouts(),loadShare()]).then(()=>{load(true);const m=location.hash.match(/connect=([a-z]*)/);if(m)openAccounts(m[1])});(function tick(){setTimeout(async()=>{try{await load(false)}catch(e){}tick()},clips.some(exBusy)?1500:10000)})();
 </script>"""
+
+PAGE = PAGE.replace("/*__AP__*/", autopilot_page.JS)
 
 
 def _write_json(path: Path, data: dict):
@@ -472,14 +476,25 @@ class Store:
 
     def list(self) -> list[dict]:
         out = []
+        ap = autopilot.load()
+        ready = taste.readiness(taste.model(), ap["min_precision"], ap["min_confidence"])
         for p, m in self._metas():
             m["dir"] = p.parent.relative_to(self.root).as_posix()
             m["res"] = m.get("res") or (self.size_of(p.parent / m["file"]) if m.get("file") else None)
             m["export_job"] = self.job_view(m.get("id"))
+            m["taste"] = self._taste_view(m, ready)
             if not m.get("description"):
                 m["description"] = self._fresh_description(p, m)
             out.append(m)
         return out
+
+    @staticmethod
+    def _taste_view(m: dict, ready: dict) -> dict | None:
+        """What the learned taste thinks of this clip: chance you would keep it, why, and whether autopilot would act on it."""
+        pred = taste.predict(m)
+        if not pred:
+            return None
+        return {**pred, "pick": bool(ready["ok"] and pred["p"] >= ready["threshold"])}
 
     def _fresh_description(self, p: Path, m: dict) -> dict:
         words = cached_words(p.parent / m["file"]) if m.get("file") else []
@@ -532,7 +547,9 @@ class Store:
                 return False
             m["status"] = status
             _write_json(p, m)
-            return True
+        taste.record(m, {"keep": 1, "trash": 0}.get(status), status)           # kept in your settings folder: survives "Delete trashed files"
+        taste.retrain_soon()
+        return True
 
     def set_description(self, cid: str, title: str, body: str) -> bool:
         if len(title) > 300 or len(body) > 5000:
@@ -747,6 +764,8 @@ def make_handler(store: Store):
                                                    "quick": {p: zernio.covers(p) for p in share.PLATFORMS}}).encode())
             if path == "/api/quick":
                 return self._send(200, json.dumps(zernio.summary()).encode())
+            if path == "/api/autopilot":
+                return self._send(200, json.dumps(autopilot.status(store)).encode())
             if path == "/api/accounts":
                 return self._send(200, json.dumps({"platforms": accounts.status(), "redirect_uri": accounts.redirect_uri(store.port),
                                                    "setup": accounts.setup_guide(store.port)}).encode())
@@ -946,6 +965,20 @@ def make_handler(store: Store):
                     return self._send(500, f"could not make titles: {e}".encode(), "text/plain")
             elif path == "/api/describe":
                 ok = store.set_description(str(body.get("id")), str(body.get("title", "")), str(body.get("body", "")))
+            elif path == "/api/autopilot/settings":
+                try:
+                    autopilot.save({k: v for k, v in body.items() if k != "paused_reason"})
+                    ok = True
+                except (ValueError, TypeError) as e:
+                    return self._send(400, str(e).encode(), "text/plain")
+            elif path == "/api/autopilot/train":
+                try:
+                    taste.train()
+                    ok = True
+                except Exception as e:
+                    return self._send(500, f"could not learn: {e}".encode(), "text/plain")
+            elif path == "/api/autopilot/hold":
+                ok = autopilot.Autopilot(store).hold(str(body.get("id")))
             elif path == "/api/purge":
                 store.purge()
                 ok = True
@@ -958,6 +991,12 @@ def serve(root: Path, cfg: Config, port: int = 8765, open_browser: bool = True, 
     root.mkdir(parents=True, exist_ok=True)
     store = Store(root, cfg)
     store.port = port
+    try:
+        taste.import_existing(root)                            # Keep / Trash pressed before learning existed
+        if taste.is_stale():
+            taste.retrain_soon()
+    except Exception as e:
+        print(f"learning could not start: {e}")
     srv = QuietServer(("127.0.0.1", port), make_handler(store))
     url = f"http://127.0.0.1:{port}/"
     print(f"Review page: {url}   (Ctrl+C to stop)")
