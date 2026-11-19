@@ -78,6 +78,8 @@ class Config:
     out_dir: str = "clips"      # drafts + review page live here
     export_dir: str = ""        # optional: finished clips are ALSO copied here (e.g. D:/Clips). Set it in the review page too
     max_clips_gb: float = 20.0  # stop cutting if the clips folder exceeds this
+    min_free_gb: float = 3.0    # stop cutting if the drive holding the clips has less free space than this (a full disk breaks recording)
+    keep_awake: bool = True     # Windows: stop the PC sleeping from idleness while clipping
 
     # --- post text suggestions (review page) ---
     hashtags: list[str] = field(default_factory=lambda: ["fyp", "viral", "streamer", "twitch", "clips"])

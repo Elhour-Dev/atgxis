@@ -15,7 +15,8 @@ from autoclip.cutter import _filters, export_clip, probe_duration
 from autoclip.detector import ChatEvent
 from autoclip.lanes import Lanes, PriorityPool
 from autoclip.recorder import Recorder, ffmpeg_exe
-from autoclip.worker import ChannelWorker, clips_gb
+from autoclip.disk import clips_gb
+from autoclip.worker import ChannelWorker
 
 needs_ffmpeg = pytest.mark.skipif(subprocess.run(["ffmpeg", "-version"], capture_output=True).returncode != 0, reason="no ffmpeg")
 

@@ -14,7 +14,9 @@ from pathlib import Path
 from . import config as cfgmod
 from . import settings
 from .cutter import pick_encoder
+from .disk import clips_gb, free_gb, sweep_stale_buffers
 from .lanes import Lanes
+from .power import KeepAwake
 from .worker import ChannelWorker, parse_target
 
 log = logging.getLogger("autoclip")
@@ -91,7 +93,7 @@ def resource_notes(cfg, n: int) -> list[str]:
     """What N streams at once will ask of this PC (rough numbers, so nobody finds out when the disk is full)."""
     if n < 2:
         return []
-    base = Path(cfg.buffer_dir) if cfg.buffer_dir else Path(tempfile.gettempdir())
+    base = buffer_base(cfg)
     need = n * 0.7 * cfg.buffer_s / 600                      # ~0.7 GB per 10 min of 1080p60
     notes = [f"{n} streams at once: about {need:.1f} GB of rolling buffer in {base} and ~{n * 8} Mbit/s download at best quality. "
              f"All 9:16 renders share {cfg.cut_workers} slot(s), best clip first; draft cuts are never held up by them."]
@@ -104,11 +106,32 @@ def resource_notes(cfg, n: int) -> list[str]:
     return notes
 
 
+def buffer_base(cfg) -> Path:
+    return Path(cfg.buffer_dir) if cfg.buffer_dir else Path(tempfile.gettempdir())
+
+
+def disk_line(cfg) -> str:
+    """Disk state for the status block, with a plain warning when clips are (about to be) no longer cut."""
+    out = Path(cfg.out_dir)
+    used, free = clips_gb(out), free_gb(out)
+    line = f"disk: clips {used:.1f}/{cfg.max_clips_gb:g} GB" + (f", {free:.0f} GB free" if free is not None else "")
+    if used >= cfg.max_clips_gb:
+        line += "  !! FULL: NOT CUTTING. Delete trashed clips in the review page or raise max_clips_gb"
+    elif free is not None and free < cfg.min_free_gb:
+        line += f"  !! LOW DISK (under {cfg.min_free_gb:g} GB): NOT CUTTING. Free up space"
+    elif used >= 0.8 * cfg.max_clips_gb:
+        line += "  (almost full)"
+    bfree = free_gb(buffer_base(cfg))
+    if bfree is not None and bfree < 1.0:
+        line += f"  !! only {bfree:.1f} GB free for the video buffer"
+    return line
+
+
 def status_block(workers: list[ChannelWorker], lanes: Lanes, cfg) -> str:
     head = f"status: {sum(1 for w in workers if w.is_alive())}/{len(workers)} streams running"
     if cfg.vertical == "auto":
         head += f" | 9:16 renders: {lanes.encodes.running} running, {lanes.encodes.waiting} waiting"
-    return "\n".join([head] + ["  " + w.status_line() for w in workers])
+    return "\n".join([head] + ["  " + w.status_line() for w in workers] + ["  " + disk_line(cfg)])
 
 
 def cmd_run(args) -> int:
@@ -131,6 +154,12 @@ def cmd_run(args) -> int:
         print(note)
     if cfg.vertical == "auto":
         pick_encoder(cfg)                         # find the hardware encoder once now, not during the first clip
+    stale = sweep_stale_buffers(buffer_base(cfg))  # leftovers of a run that was killed (console window closed, crash, power cut)
+    if stale:
+        print(f"Removed {stale} leftover video buffer folder(s) from an earlier run that did not shut down cleanly.")
+    awake = KeepAwake(cfg.keep_awake)
+    if awake.start():
+        print("Keeping this PC awake while clipping (closing the lid or choosing Sleep still stops it).")
     stop = threading.Event()
     lanes = Lanes(cfg)                            # shared by all streams: bounded encodes, draft cuts that never wait
     workers = [ChannelWorker(cfg, t, Path(cfg.out_dir), stop, lanes=lanes) for t in targets]
@@ -148,6 +177,8 @@ def cmd_run(args) -> int:
     except KeyboardInterrupt:
         print("\nStopping (finishing clips in progress)...")
         stop.set()
+    finally:
+        awake.stop()
     for w in workers:
         w.join(timeout=120)
     # On Ctrl+C the renders still waiting in line are skipped (the drafts exist; Export in the review page makes them);
