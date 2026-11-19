@@ -60,7 +60,8 @@ def segmenter_cmd(cfg: Config) -> list[str]:
             "seg_%06d.ts"]
 
 
-_AD_WORDS = re.compile(r"advert|pre-?roll|mid-?roll|commercial", re.I)
+# What streamlink says while Twitch shows ads. Real example (streamlink 8.6.3): "[plugins.twitch][info] Will skip ad segments".
+AD_WORDS = re.compile(r"advert|pre-?roll|mid-?roll|commercial|\bads?\b", re.I)
 START_WAIT_S = 90            # a capture that has produced nothing at all this long is abandoned (unless an ad break is announced)
 
 
@@ -77,7 +78,7 @@ def streamlink_tail(log_path: Path, nbytes: int = 4000) -> str:
 
 def ad_break_announced(log_path: Path) -> bool:
     """Streamlink pauses its output while a Twitch ad break runs (and says so in its log). Silence then is not a dead stream."""
-    return bool(_AD_WORDS.search(streamlink_tail(log_path)))
+    return bool(AD_WORDS.search(streamlink_tail(log_path)))
 
 
 def last_words(log_path: Path, limit: int = 220) -> str:

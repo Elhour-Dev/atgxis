@@ -32,16 +32,22 @@ def _setup_logging():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
 
 
-def diagnose_stream(messages: str, got_bytes: int, seconds: float) -> list[str]:
+def diagnose_stream(messages: str, got_bytes: int, seconds: float, first_video_s: float | None = None) -> list[str]:
     """What a test of one channel means, in plain words (pure: unit-tested)."""
+    from .recorder import AD_WORDS
     low = messages.lower()
     if got_bytes > 200_000:
-        return [f"OK: video arrives ({got_bytes * 8 / 1e6 / max(seconds, 1):.1f} Mbit/s). Recording this channel works from this PC right now."]
+        out = ["OK: video arrives. Recording this channel works from this PC right now."]
+        if first_video_s is not None and first_video_s > 12 and AD_WORDS.search(low):
+            out.append(f"The first video came after {first_video_s:.0f} s: Twitch showed an ad first and streamlink skipped it. That is normal for big "
+                       "channels without a Twitch login. The recorder waits such ads out; video missing during an ad cannot be clipped.")
+        return out
     out = ["NO VIDEO arrived."]
     if re.search(r"no playable streams|offline|not found|unable to find|could not find", low):
         out.append("Twitch reports the channel as offline (or the name is wrong). Open the channel in your browser to check.")
-    if re.search(r"advert|pre-?roll|mid-?roll|commercial", low):
-        out.append("An ad break is running: streamlink pauses during it. Try again in a minute. If every try ends in an ad break, tell me.")
+    if AD_WORDS.search(low):
+        out.append("Twitch is showing an AD BREAK first: streamlink skips the ad and sends no video until it ends (can be a minute or more on big "
+                   "channels). Run the check again with a longer wait, e.g.  python -m autoclip check <channel> --seconds 120")
     if re.search(r"403|401|forbidden|unauthori[sz]ed|login|subscriber|geo|not available in your", low):
         out.append("Twitch refuses access (login/subscription needed, or this network or region is blocked).")
     if re.search(r"timed out|timeout|connection|name or service|getaddrinfo|resolve|network|ssl|reset by peer", low):
@@ -55,7 +61,7 @@ def diagnose_stream(messages: str, got_bytes: int, seconds: float) -> list[str]:
 
 def cmd_check(args) -> int:
     """Ask streamlink for a few seconds of one channel, exactly like the recorder does, and say what happened."""
-    from .recorder import kill, streamlink_cmd
+    from .recorder import AD_WORDS, kill, streamlink_cmd
     cfg = _load_cfg(args)
     try:
         _, label, url = parse_target(args.target)
@@ -69,11 +75,13 @@ def cmd_check(args) -> int:
     ver = subprocess.run([exe, "--version"], capture_output=True, text=True, errors="replace").stdout.strip()
     print(f"{ver or 'streamlink (version unknown)'}\nTesting {label}: asking for {args.seconds:g} s of video (quality {cfg.quality}) ...")
     proc = subprocess.Popen(streamlink_cmd(url, cfg.quality), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    got, lines = [0], []
+    got, lines, first = [0], [], [None]
 
     def pump_out():
         while chunk := proc.stdout.read(65536):
             got[0] += len(chunk)
+            if first[0] is None:
+                first[0] = time.time()
 
     def pump_err():
         for raw in iter(proc.stderr.readline, b""):
@@ -83,16 +91,25 @@ def cmd_check(args) -> int:
     for t in pumps:
         t.start()
     t0 = time.time()
-    while time.time() - t0 < args.seconds and proc.poll() is None:
+    ad_wait, noted = max(args.seconds, 120.0), False
+    while proc.poll() is None and got[0] < 200_000:                  # enough video arrived = proven, stop early
+        elapsed = time.time() - t0
+        saw_ad = got[0] == 0 and any(AD_WORDS.search(ln) for ln in list(lines))
+        if saw_ad and not noted:
+            noted = True
+            print(f"Twitch is showing an ad first (streamlink skips it, so no video arrives until it ends). Waiting up to {ad_wait:.0f} s ...")
+        if elapsed >= (ad_wait if saw_ad else args.seconds):
+            break
         time.sleep(0.2)
     kill(proc)
     for t in pumps:
         t.join(3)
     took = max(time.time() - t0, 0.5)
     msgs = "\n".join(lines)
+    first_s = (first[0] - t0) if first[0] else None
     print(f"\nstreamlink said:\n" + ("\n".join("  " + ln for ln in lines[-12:]) if lines else "  (nothing)"))
-    print(f"\nreceived {got[0] / 1e6:.2f} MB in {took:.0f} s\n")
-    verdict = diagnose_stream(msgs, got[0], took)
+    print(f"\nreceived {got[0] / 1e6:.2f} MB in {took:.0f} s" + (f", first video after {first_s:.0f} s" if first_s is not None else "") + "\n")
+    verdict = diagnose_stream(msgs, got[0], took, first_s)
     print("\n".join(verdict))
     return 0 if got[0] > 200_000 else 1
 
