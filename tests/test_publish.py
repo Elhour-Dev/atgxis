@@ -19,6 +19,7 @@ class Fake:
     ig_polls = 2
     ig_account_type = "BUSINESS"
     tt_state = "SEND_TO_USER_INBOX"
+    yt_scope = "https://www.googleapis.com/auth/youtube.upload"
     calls: list
 
 
@@ -52,6 +53,13 @@ class H(BaseHTTPRequestHandler):
             if q.get("access_token") != "IGTOKEN" + "x" * 20:
                 return self.reply(400, {"error": {"message": "Invalid OAuth access token", "code": 190}})
             return self.reply(200, {"user_id": "1789", "username": "streamclips", "account_type": FAKE.ig_account_type})
+        if u.path == "/google/tokeninfo":
+            return self.reply(200, {"scope": FAKE.yt_scope, "expires_in": "3000"}) if q.get("access_token", "").startswith("ya29.") \
+                else self.reply(400, {"error": "invalid_token"})
+        if u.path == "/tt/user/info/":
+            if not self.headers.get("Authorization", "").startswith("Bearer act."):
+                return self.reply(401, {"error": {"code": "access_token_invalid"}})
+            return self.reply(200, {"data": {"user": {"display_name": "Stream Clips"}}, "error": {"code": "ok"}})
         if u.path.endswith("/refresh_access_token"):
             return self.reply(200, {"access_token": "IGTOKEN" + "y" * 20, "expires_in": 5184000})
         if u.path.endswith("/CONTAINER1"):
@@ -118,11 +126,12 @@ class H(BaseHTTPRequestHandler):
 def world(tmp_path, monkeypatch):
     monkeypatch.setenv("AUTOCLIP_CONFIG_DIR", str(tmp_path / "cfg"))
     FAKE.yt_privacy, FAKE.ig_polls, FAKE.ig_account_type, FAKE.tt_state, FAKE.calls = "public", 2, "BUSINESS", "SEND_TO_USER_INBOX", []
+    FAKE.yt_scope = "https://www.googleapis.com/auth/youtube.upload"
     srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     BASE["url"] = f"http://127.0.0.1:{srv.server_address[1]}"
     for k, v in {"google_token": "/google/token", "yt_upload": "/yt/upload", "ig_graph": "/ig", "ig_refresh": "/ig/refresh_access_token",
-                 "tt_api": "/tt", "google_auth": "/google/auth", "tt_auth": "/tt/auth"}.items():
+                 "tt_api": "/tt", "google_auth": "/google/auth", "tt_auth": "/tt/auth", "google_tokeninfo": "/google/tokeninfo"}.items():
         monkeypatch.setitem(accounts.ENDPOINTS, k, BASE["url"] + v)
     monkeypatch.setattr(publish, "POLL_EVERY_S", 0.01)
     yield tmp_path
@@ -280,7 +289,7 @@ def test_accounts_api(world):
     srv, call = server(root)
     code, out = call("/api/accounts/save", {"platform": "instagram", "values": {"access_token": "IGTOKEN" + "x" * 20}})
     assert code == 200 and out == {"connected": True, "account": "@streamclips"}
-    code, out = call("/api/accounts/save", {"platform": "youtube", "values": {"client_id": "cid", "client_secret": "sec"}, "options": {"privacy": "unlisted"}})
+    code, out = call("/api/accounts/save", {"platform": "youtube", "values": {"client_id": "123-abc.apps.googleusercontent.com", "client_secret": "sec"}, "options": {"privacy": "unlisted"}})
     assert code == 200 and out["auth_url"].startswith(BASE["url"] + "/google/auth") and accounts.get("youtube")["privacy"] == "unlisted"
     code, out = call("/api/accounts")
     assert code == 200 and out["platforms"]["instagram"]["connected"] and "IGTOKEN" not in json.dumps(out)

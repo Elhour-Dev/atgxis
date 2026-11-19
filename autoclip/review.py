@@ -52,9 +52,16 @@ video.vert{max-height:360px;width:auto;align-self:flex-start}
 .acc{background:#8881;border-radius:10px;padding:10px;display:flex;flex-direction:column;gap:6px}
 .acc input[type=text],.acc input[type=password]{padding:6px;border-radius:6px;border:1px solid #8884;background:var(--bg);color:var(--fg)}
 .acc ol{margin:4px 0 4px 18px;padding:0;font-size:13px;color:var(--mut)}
+.steps{margin:4px 0;padding:0;list-style:none;display:flex;flex-direction:column;gap:8px}
+.steps li{display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap;font-size:13px}.steps li.done .t{text-decoration:line-through;opacity:.55}
+.steps .t{flex:1 1 320px}a.btn{font:inherit;font-size:13px;padding:4px 10px;border-radius:8px;border:1px solid #8884;background:var(--card);color:var(--fg);text-decoration:none;white-space:nowrap}
+.chip{font-size:12px;padding:2px 10px;border-radius:999px;background:#8882}.chip.ok{background:#16a34a33}
+.drop{border:2px dashed #8886;border-radius:10px;padding:12px;text-align:center;font-size:13px}.drop.over{border-color:var(--acc);background:#6d28d922}
+code.cp{font:12px ui-monospace,monospace;background:#8882;border-radius:6px;padding:2px 6px;word-break:break-all}
+.note{font-size:13px;white-space:pre-wrap}.note.bad{color:#dc2626}.note.good{color:#16a34a}
 pre.share{white-space:pre-wrap;font:12px/1.4 system-ui;background:#8881;border-radius:6px;padding:6px;margin:4px 0;max-height:120px;overflow:auto}
 details{background:#8881;border-radius:8px;padding:6px 8px}summary{cursor:pointer;font-size:14px}
-details input[type=text],details textarea{width:100%;box-sizing:border-box;font:inherit;padding:6px;border-radius:6px;border:1px solid #8884;background:var(--bg);color:var(--fg);margin-top:6px}
+details input[type=text],details input[type=password],details textarea{width:100%;box-sizing:border-box;font:inherit;padding:6px;border-radius:6px;border:1px solid #8884;background:var(--bg);color:var(--fg);margin-top:6px}
 </style>
 <header><h1>Clip review</h1>
 <select id=f><option value=new>To review</option><option value=keep>Kept</option><option value=trash>Trash</option><option value=all>All</option></select>
@@ -157,7 +164,9 @@ function render(){
             try{await navigator.clipboard.writeText(r1.text)}catch(e){}
             if(confirm(shareInfo.platforms[k].label+': page opened, file selected, caption copied to your clipboard.'+NL+NL+'Paste the caption, attach the video and press Post there.'+NL+'Press OK once it is posted (marks it done), or Cancel to leave it as "opened".'))await post('/api/share/mark',{id:c.id,platform:k,status:'done'})}}
         go.disabled=false;go.textContent='Share selected…';load(true)};
-      sd.append(el('div','mut','Clip file:'),fsel,el('div','mut','Method:'),psel,row,fl,go,st);card.append(sd)}
+      const cn=el('div','row');const paintCn=()=>{cn.replaceChildren();if(psel.value!=='direct'||!shareInfo.connected)return;const need=Object.keys(shareInfo.platforms).filter(k=>!shareInfo.connected[k]);if(!need.length)return;
+        cn.append(el('span','mut','Not connected yet:'));for(const k of need){const b=el('button',null,'Connect '+shareInfo.platforms[k].label);b.onclick=()=>openAccounts(k);cn.append(b)}};psel.addEventListener('change',paintCn);paintCn();
+      sd.append(el('div','mut','Clip file:'),fsel,el('div','mut','Method:'),psel,cn,row,fl,go,st);card.append(sd)}
     const lb=el('button',null,layouts[c.channel]?'Edit layout for '+c.channel+' ✓':'Set layout for '+c.channel+' (webcam + gameplay)');lb.onclick=()=>openLayout(c,v);card.append(lb);
     const vx=(c.exports||[]).filter(x=>x.vertical).slice(-1)[0];
     if(vx){const pvid=el('video','vert');pvid.controls=true;pvid.preload='metadata';pvid.src=fileUrl(c,vx.file);card.append(el('div','mut','Vertical preview (latest export):'),pvid)}
@@ -184,37 +193,87 @@ function openFolders(){
     sv.onclick=async()=>{const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({export_dir:i1.value,out_dir:i2.value})});
       msg.textContent=r.ok?(await r.json()).restart_needed?'Saved. Restart the clipper and this page to use the new drafts folder.':'Saved. New exports use it right away.':await r.text()};
     cl.onclick=()=>ov.remove();const bar=el('div','row');bar.append(sv,cl);box.append(w1,w2,bar,msg,el('div','hint','Settings file: '+S.settings_file));document.body.append(ov)})}
-const STEPS={
-youtube:['Open console.cloud.google.com, create a project, then APIs and Services > Library > enable YouTube Data API v3.','OAuth consent screen: type External, add your own Google account as a test user, then press Publish app (so the login does not expire after 7 days).','Credentials > Create credentials > OAuth client ID > type Desktop app. Copy the client ID and secret below.','Press Save and connect, pick your YouTube channel in the new tab and allow the upload permission. Google shows a not verified warning for your own app: choose Advanced > continue.'],
-instagram:['In the Instagram app: Settings > Account type > switch to a Professional account (Creator is fine).','Open developers.facebook.com, create an app (type Business), add the product Instagram with Instagram login, add your account as an Instagram tester and accept the invite in the Instagram app.','In the app dashboard under Instagram, press Generate token for your account and paste it below.'],
-tiktok:['Open developers.tiktok.com, create an app and add the products Login Kit and Content Posting API.','Add this redirect address in the app settings: REDIRECT. Enable the scopes video.upload and video.publish, and add your TikTok account as a test user.','Paste the client key and secret below and press Save and connect. TikTok only allows private direct posts for apps it has not audited, so Draft mode (the video waits in your TikTok inbox, you press Post) is the default.']};
-async function openAccounts(){
-  const S=await (await fetch('/api/accounts')).json();
+const lsGet=k=>{try{return localStorage.getItem(k)}catch(e){return null}};
+const lsSet=(k,on)=>{try{on?localStorage.setItem(k,'1'):localStorage.removeItem(k)}catch(e){}};
+const safeUrl=u=>/^https:[/][/]/.test(u)?u:'#';
+async function copyText(t){try{await navigator.clipboard.writeText(t);return true}catch(e){const x=el('textarea');x.value=t;document.body.append(x);x.select();let ok=false;try{ok=document.execCommand('copy')}catch(y){}x.remove();return ok}}
+const GID_SUFFIX='.apps.googleusercontent.com';
+async function openAccounts(focus){
+  let S=await (await fetch('/api/accounts')).json();
+  const notes={};                                   // platform -> {text, kind, href}: survives a redraw of the cards
   const ov=el('div','modal'),box=el('div','mbox');ov.append(box);box.append(el('h2',null,'Connect your accounts'));
-  box.append(el('div','hint','Optional: only needed for automatic posting. The Share assistant works without any of this. Your logins are stored on this PC only (accounts.json in the autoclip settings folder) and are never shown again or sent anywhere except to the platform itself. Everything uses the free official APIs with developer apps you create on your own accounts.'));
-  const msg=el('div','hint');
-  const build=()=>{for(const old of box.querySelectorAll('.acc'))old.remove();
-    for(const [pl,info] of Object.entries(S.platforms)){
-      const sec=el('div','acc'),label=(shareInfo.platforms[pl]||{label:pl}).label;
-      sec.append(el('b',null,label+(info.connected?'  ✅ connected '+(info.account||''):'  not connected')));
-      const ins={};for(const f of info.fields){const i=el('input');i.type=f.secret?'password':'text';i.placeholder=f.label+(info.have.includes(f.key)?' (saved: leave empty to keep)':'');i.autocomplete='off';ins[f.key]=i;sec.append(i)}
-      const opts={};
-      if(pl==='youtube'){const s=el('select');for(const v of ['public','unlisted','private']){const o=el('option',null,'Upload as: '+v);o.value=v;s.append(o)}s.value=info.options.privacy||'public';opts.privacy=s;sec.append(s)}
-      if(pl==='tiktok'){const m=el('select');for(const [v,t] of [['draft','Draft: video waits in my TikTok inbox, I press Post'],['direct','Direct post (private unless TikTok audited the app)']]){const o=el('option',null,t);o.value=v;m.append(o)}m.value=info.options.mode||'draft';opts.mode=m;sec.append(m)}
-      const d=el('details');d.append(el('summary',null,'How to get these (about 5 minutes)'));const ol=el('ol');for(const s of STEPS[pl])ol.append(el('li',null,s.replace('REDIRECT',S.redirect_uri)));d.append(ol);sec.append(d);
-      const row=el('div','row'),go=el('button','primary','Save and connect');
-      go.onclick=async()=>{go.disabled=true;msg.textContent='Working...';const values={},options={};for(const k in ins)values[k]=ins[k].value;for(const k in opts)options[k]=opts[k].value;
-        const r=await fetch('/api/accounts/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({platform:pl,values,options})});go.disabled=false;
-        if(!r.ok){msg.textContent=await r.text();return}
-        const j=await r.json();
-        if(j.auth_url){window.open(j.auth_url,'_blank');msg.textContent='Finish signing in in the tab that just opened. This window updates by itself.';
-          for(let n=0;n<90;n++){await new Promise(z=>setTimeout(z,2000));S.platforms=(await (await fetch('/api/accounts')).json()).platforms;if(S.platforms[pl].connected){msg.textContent=label+' connected.';break}}}
-        else{msg.textContent=j.connected?label+' connected as '+j.account:'Saved.';S.platforms=(await (await fetch('/api/accounts')).json()).platforms}
-        await loadShare();build()};
-      row.append(go);
-      if(info.connected||info.have.length){const dc=el('button',null,'Disconnect');dc.onclick=async()=>{if(!confirm('Remove the saved login for '+label+' from this PC?'))return;await post('/api/accounts/disconnect',{platform:pl});S.platforms=(await (await fetch('/api/accounts')).json()).platforms;await loadShare();build()};row.append(dc)}
-      sec.append(row);box.insertBefore(sec,msg)}};
-  const cl=el('button',null,'Close');cl.onclick=()=>{ov.remove();sig='';load(true)};box.append(msg,cl);build();document.body.append(ov)}
+  box.append(el('div','hint','Optional: only needed for automatic posting. The Share assistant works without any of this. Every platform makes you create a free developer app on your own account (that cannot be skipped); each step below opens the exact page and tells you what to press. Your logins stay on this PC (accounts.json in the autoclip settings folder), are never shown again and are only ever sent to the platform itself.'));
+  const list=el('div');list.style.cssText='display:flex;flex-direction:column;gap:10px';box.append(list);
+  const refresh=async()=>{S=await (await fetch('/api/accounts')).json();await loadShare()};
+  const card=pl=>{
+    const info=S.platforms[pl],guide=S.setup[pl],label=(shareInfo.platforms[pl]||{label:pl}).label;
+    const sec=el('div','acc');sec.dataset.pl=pl;
+    const head=el('div','row');head.append(el('b',null,label),el('span','chip'+(info.connected?' ok':''),info.connected?'✅ Connected'+(info.account?' · '+info.account:''):'Not connected'));sec.append(head);
+    const msg=el('div','note');
+    const setNote=(text,kind,href)=>{notes[pl]={text,kind,href};paint()};
+    const paint=()=>{const n=notes[pl];msg.replaceChildren();msg.className='note'+(n&&n.kind?' '+n.kind:'');if(!n)return;msg.append(n.text);if(n.href){const a=el('a',null,' Open the sign-in page');a.href=safeUrl(n.href);a.target='_blank';a.rel='noopener';msg.append(a)}};
+    // --- guided steps (progress is remembered in this browser)
+    const det=el('details');det.open=!info.connected&&(!focus||focus===pl);const sum=el('summary');det.append(sum);
+    const key=i=>'acc-'+pl+'-'+i;
+    const prog=()=>{const n=guide.steps.filter((x,i)=>lsGet(key(i))==='1').length;sum.textContent=(info.connected?'Setup steps':'How to connect: '+guide.steps.length+' steps, about '+guide.minutes+' minutes')+' ('+n+'/'+guide.steps.length+' done)'};
+    const ol=el('ol','steps');
+    guide.steps.forEach((s0,i)=>{
+      const li=el('li'),cb=el('input');cb.type='checkbox';cb.checked=lsGet(key(i))==='1';li.classList.toggle('done',cb.checked);
+      cb.onchange=()=>{lsSet(key(i),cb.checked);li.classList.toggle('done',cb.checked);prog()};
+      const t=el('div','t');t.append(el('b',null,(i+1)+'. '),s0.text);
+      if(s0.copy){t.append(' ',el('code','cp',s0.copy.value))}
+      li.append(cb,t);
+      if(s0.link){const a=el('a','btn',s0.link.label+' ↗');a.href=safeUrl(s0.link.url);a.target='_blank';a.rel='noopener';li.append(a)}
+      if(s0.copy){const c=el('button',null,s0.copy.label);c.onclick=async()=>{const ok=await copyText(s0.copy.value);c.textContent=ok?'Copied ✓':'Copy failed: select the text yourself';setTimeout(()=>c.textContent=s0.copy.label,1800)};li.append(c)}
+      ol.append(li)});
+    prog();det.append(ol);sec.append(det);
+    // --- what to paste
+    const ins={};let jsonText='';
+    if(pl==='youtube'){
+      const drop=el('div','drop'),dmsg=el('span',null,'Drop the downloaded client JSON file here, or ');
+      const fi=el('input');fi.type='file';fi.accept='.json,application/json';fi.style.display='none';
+      const pick=el('button',null,'Choose file…');pick.onclick=()=>fi.click();
+      const take=async f=>{if(!f)return;if(f.size>100000){dmsg.textContent='That file is too big to be a client JSON. ';return}jsonText=await f.text();drop.classList.remove('over');dmsg.textContent='✓ '+f.name+' loaded. Now press Save and connect. ';drop.style.borderColor='#16a34a'};
+      fi.onchange=()=>take(fi.files[0]);
+      drop.ondragover=e=>{e.preventDefault();drop.classList.add('over')};drop.ondragleave=()=>drop.classList.remove('over');
+      drop.ondrop=e=>{e.preventDefault();take(e.dataTransfer.files[0])};
+      drop.append(dmsg,pick,fi);sec.append(drop);
+      const hand=el('details');hand.append(el('summary',null,'Or type the client ID and secret by hand'));
+      const idHint=el('div','note bad');
+      for(const f of info.fields){const i=el('input');i.type=f.secret?'password':'text';i.placeholder=f.label+(info.have.includes(f.key)?' (saved: leave empty to keep)':'');i.autocomplete='off';ins[f.key]=i;hand.append(i)}
+      ins.client_id.oninput=()=>{const v=ins.client_id.value.trim();idHint.textContent=v&&v[0]!=='{'&&!v.endsWith(GID_SUFFIX)?'The client ID ends with '+GID_SUFFIX+'. This looks like something else (project ID? API key?).':''};
+      hand.append(idHint);sec.append(hand);
+    }else{
+      for(const f of info.fields){const i=el('input');i.type=f.secret?'password':'text';i.placeholder=f.label+(info.have.includes(f.key)?' (saved: leave empty to keep)':'');i.autocomplete='off';ins[f.key]=i;sec.append(i)}
+    }
+    const opts={};
+    if(pl==='youtube'){const s1=el('select');for(const v of ['public','unlisted','private']){const o=el('option',null,'Upload as: '+v);o.value=v;s1.append(o)}s1.value=info.options.privacy||'public';opts.privacy=s1;sec.append(s1)}
+    if(pl==='tiktok'){const m=el('select');for(const [v,t] of [['draft','Draft: video waits in my TikTok inbox, I press Post'],['direct','Direct post (private unless TikTok audited the app)']]){const o=el('option',null,t);o.value=v;m.append(o)}m.value=info.options.mode||'draft';opts.mode=m;sec.append(m)}
+    // --- buttons
+    const row=el('div','row'),go=el('button','primary',info.connected?'Save changes':'Save and connect');
+    go.onclick=async()=>{go.disabled=true;setNote('Working…','');const values={},options={};for(const k in ins)values[k]=ins[k].value;if(jsonText)values.client_json=jsonText;for(const k in opts)options[k]=opts[k].value;
+      const r=await fetch('/api/accounts/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({platform:pl,values,options})});go.disabled=false;
+      if(!r.ok){setNote(await r.text(),'bad');return}
+      const j=await r.json();
+      if(j.auth_url){const w=window.open(j.auth_url,'_blank');
+        setNote(w?'Finish signing in in the tab that just opened. This window updates by itself.':'Your browser blocked the new tab.','',w?null:j.auth_url);
+        for(let n=0;n<90;n++){await new Promise(z=>setTimeout(z,2000));if(!ov.isConnected)return;await refresh();if(S.platforms[pl].connected&&S.platforms[pl].account){notes[pl]={text:label+' connected'+(S.platforms[pl].account?' as '+S.platforms[pl].account:'')+'.',kind:'good'};break}}}
+      else{await refresh();notes[pl]=j.connected?{text:label+' connected as '+j.account+'.',kind:'good'}:{text:'Saved.',kind:'good'}}
+      build()};
+    row.append(go);
+    if(info.connected){const tb=el('button',null,'Test connection');tb.title='Checks the saved login with the platform. Posts nothing.';
+      tb.onclick=async()=>{tb.disabled=true;setNote('Checking with '+label+'…','');const r=await fetch('/api/accounts/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({platform:pl})});tb.disabled=false;
+        if(r.ok){const j=await r.json();await refresh();notes[pl]={text:'✓ '+j.message,kind:'good'};build()}else setNote(await r.text(),'bad')};row.append(tb)}
+    if(info.connected||info.have.length){const dc=el('button',null,'Disconnect');dc.onclick=async()=>{if(!confirm('Remove the saved login for '+label+' from this PC?'))return;await post('/api/accounts/disconnect',{platform:pl});delete notes[pl];await refresh();build()};row.append(dc)}
+    sec.append(row,msg);paint();
+    // --- when something goes wrong
+    const tr=el('details');tr.append(el('summary',null,'Something went wrong?'));
+    const ul=el('ul');ul.style.cssText='margin:4px 0 4px 18px;padding:0;font-size:13px';
+    for(const t of guide.troubleshooting){const li=el('li');li.append(el('b',null,t.problem+': '),t.fix);ul.append(li)}
+    tr.append(ul);sec.append(tr);return sec};
+  const build=()=>{list.replaceChildren(...Object.keys(S.platforms).map(card))};
+  const cl=el('button',null,'Close');cl.onclick=()=>{ov.remove();sig='';load(true)};box.append(cl);build();document.body.append(ov);
+  if(focus){const t=list.querySelector('[data-pl="'+focus+'"]');if(t)t.scrollIntoView()}}
 async function loadLayouts(){try{layouts=await (await fetch('/api/layouts')).json()}catch(e){}}
 const OUTW=1080,OUTH=1920,even=n=>Math.max(2,Math.round(n/2)*2);
 function openLayout(c,video){
@@ -304,7 +363,7 @@ function openLayout(c,video){
   sync();renderCap();loadFrame()}
 document.getElementById('f').onchange=()=>{shown=30;render()};document.getElementById('s').onchange=()=>{shown=30;render()};
 document.getElementById('purge').onclick=async()=>{if(confirm('Permanently delete every trashed clip file?')){await post('/api/purge',{});load(true)}};
-document.getElementById('folders').onclick=openFolders;document.getElementById('accts').onclick=openAccounts;Promise.all([loadLayouts(),loadShare()]).then(()=>load(true));setInterval(()=>load(false),10000);
+document.getElementById('folders').onclick=openFolders;document.getElementById('accts').onclick=openAccounts;Promise.all([loadLayouts(),loadShare()]).then(()=>{load(true);const m=location.hash.match(/connect=([a-z]*)/);if(m)openAccounts(m[1])});setInterval(()=>load(false),10000);
 </script>"""
 
 
@@ -518,8 +577,7 @@ class Store:
         """Store what you typed in the Accounts window. Instagram is checked right away; YouTube / TikTok return a sign-in URL."""
         if platform not in accounts.FIELDS:
             raise ValueError("unknown platform")
-        allowed = {k for k, _, _ in accounts.FIELDS[platform]}
-        clean = {k: str(v).strip() for k, v in values.items() if k in allowed and str(v).strip()}
+        clean = accounts.clean_credentials(platform, values)      # tidies pasted text, reads a downloaded Google JSON, explains mix-ups
         opts = {}
         if platform == "youtube" and options.get("privacy") in ("public", "unlisted", "private"):
             opts["privacy"] = options["privacy"]
@@ -585,14 +643,17 @@ def make_handler(store: Store):
                 return self._send(200, json.dumps({"out_dir": str(store.root), "export_dir": store.cfg.export_dir,
                                                    "settings_file": str(settings.path())}).encode())
             if path == "/api/share/providers":
-                return self._send(200, json.dumps({"providers": share.providers_info(), "platforms": share.PLATFORMS}).encode())
+                return self._send(200, json.dumps({"providers": share.providers_info(), "platforms": share.PLATFORMS,
+                                                   "connected": {p: accounts.connected(p) for p in share.PLATFORMS}}).encode())
             if path == "/api/accounts":
-                return self._send(200, json.dumps({"platforms": accounts.status(), "redirect_uri": accounts.redirect_uri(store.port)}).encode())
+                return self._send(200, json.dumps({"platforms": accounts.status(), "redirect_uri": accounts.redirect_uri(store.port),
+                                                   "setup": accounts.setup_guide(store.port)}).encode())
             if path == "/oauth/callback":
                 q = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
                 try:
                     if q.get("error"):
-                        raise accounts.ApiError(f"sign-in was cancelled or refused: {q.get('error_description') or q['error']}")
+                        raise accounts.ApiError(accounts.explain_oauth_error(accounts.cancel_oauth(q.get("state", "")), q["error"],
+                                                                             q.get("error_description", "")))
                     msg, ok = accounts.finish_oauth(q.get("state", ""), q.get("code", "")), True
                 except accounts.ApiError as e:
                     msg, ok = str(e), False
@@ -738,6 +799,11 @@ def make_handler(store: Store):
                                                                          dict(body.get("options") or {}))).encode())
                 except (ValueError, KeyError, TypeError, accounts.ApiError) as e:
                     return self._send(400, str(e).encode(), "text/plain")
+            elif path == "/api/accounts/test":
+                try:
+                    return self._send(200, json.dumps(accounts.verify(str(body.get("platform")))).encode())
+                except (accounts.ApiError, KeyError, TypeError) as e:
+                    return self._send(400, str(e).encode(), "text/plain")
             elif path == "/api/accounts/disconnect":
                 if str(body.get("platform")) in accounts.FIELDS:
                     accounts.clear(str(body["platform"]))
@@ -764,7 +830,7 @@ def make_handler(store: Store):
     return H
 
 
-def serve(root: Path, cfg: Config, port: int = 8765, open_browser: bool = True):
+def serve(root: Path, cfg: Config, port: int = 8765, open_browser: bool = True, open_path: str = ""):
     root.mkdir(parents=True, exist_ok=True)
     store = Store(root, cfg)
     store.port = port
@@ -773,7 +839,7 @@ def serve(root: Path, cfg: Config, port: int = 8765, open_browser: bool = True):
     print(f"Review page: {url}   (Ctrl+C to stop)")
     if open_browser:
         import webbrowser
-        webbrowser.open(url)
+        webbrowser.open(url + open_path)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
