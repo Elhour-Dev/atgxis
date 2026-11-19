@@ -74,7 +74,8 @@ async function openCampaigns(){
     if(cur===null)return 'campaigns.json is damaged: fix it under "Advanced" first.';
     const list=change(cur);if(typeof list==='string')return list;
     const r=await jpost('/api/campaigns/save',{text:JSON.stringify({campaigns:list},null,2)});
-    if(!r.ok)return await r.text();form=null;await refresh();load(true);return null}
+    if(!r.ok)return await r.text();form=null;editing=null;await refresh();load(true);return null}     // an Advanced draft is now stale: saving it would undo this
+  async function trySave(change){try{return await saveList(change)}catch(x){return 'Could not save (is the review page still running?): '+x}}
 
   function formView(){                         // the easy way: a form; the server checks everything again on save
     const list=rawList()||[],isNew=form<0,src=isNew?{}:(list[form]||{}),r0=(src.rules&&typeof src.rules==='object')?src.rules:{};
@@ -101,7 +102,7 @@ async function openCampaigns(){
     const rate=num(src.rate_per_1k,'1.00'),mn=num(src.min,'0'),cap=num(src.cap,'0');
     field('Pay',row(el('span',null,'$'),rate,el('span','mut','per 1000 views · minimum payout $'),mn,el('span','mut','· maximum $'),cap,el('span','mut','(0 = no maximum)')));
     const ends=el('input');ends.type='date';const day0=/^\d{4}-\d{2}-\d{2}/.test(String(src.ends||''))?String(src.ends).slice(0,10):'';ends.value=day0;
-    const endsOut=()=>ends.value===day0&&src.ends?src.ends:(ends.value||null);       // an untouched "2026-12-31T18:00" keeps its time
+    const endsOut=()=>day0&&ends.value===day0?src.ends:(ends.value||null);       // an untouched "2026-12-31T18:00" keeps its time; an unreadable one can be cleared
     field('Ends',row(ends,el('span','mut','leave empty if it has no end date')));
     const act=chk(isNew?true:src.active===true,'Running: use this campaign now'),bud=chk(src.budget_empty,'Budget used up (stops posting)');
     field('Status',row(act,bud));
@@ -121,7 +122,10 @@ async function openCampaigns(){
     const msg=el('div','note bad');msg.style.display='none';
     const WORDS=[['rules.min_len_s','the shortest clip length'],['rules.max_len_s','the longest clip length'],['rules.hashtags','Hashtags'],
       ['rules.disclosure','Disclosure'],['rate_per_1k','Pay per 1000 views'],['cap (0 = no cap)','Maximum payout'],['channels','Streamers'],['platforms','Pays for'],['url ','Campaign page ']];
-    const fail=t=>{for(const [a,b] of WORDS)t=t.split(a).join(b);msg.textContent=t;msg.style.display=''};     // the file's field names -> the form's
+    const fail=t=>{const m=/^campaign \d+ \((.*?)\):/.exec(t),mine=name.value.trim()||src.name;
+      if(m&&m[1]!==mine&&m[1]!==src.name)t='Another campaign in the list has a problem, and nothing can be saved until it is fixed (Cancel, then its "Fix" button): '+t;
+      else for(const [a,b] of WORDS)t=t.split(a).join(b);                  // this form's own problem: in the form's words
+      msg.textContent=t;msg.style.display=''};     // the file's field names -> the form's
     const sv=el('button','primary',isNew?'Add campaign':'Save changes'),cancel=el('button',null,'Cancel'),del=el('button','danger sm','Delete campaign');del.hidden=isNew;
     cancel.onclick=()=>{form=null;paint()};
     sv.onclick=async()=>{
@@ -136,10 +140,10 @@ async function openCampaigns(){
         rules:{...r0,disclosure:disc.value.trim()||null,hashtags:tags.value.split(/[\s,]+/).filter(Boolean).map(t=>'#'+t.replace(/^#+/,'')),
           must_show:ms.value||null,min_len_s:n(lo),max_len_s:n(hi),need_speech:sp.cb.checked,no_ai:ai.cb.checked,notes:notes.value}};
       if(!isNew&&!src.id)e.id=slug(src.name);              // renaming keeps its posts and stats
-      sv.disabled=true;const err=await saveList(same(nl=>{if(isNew)nl.push(e);else nl[at]=e;return nl}));sv.disabled=false;
+      sv.disabled=true;const err=await trySave(same(nl=>{if(isNew)nl.push(e);else nl[at]=e;return nl}));sv.disabled=false;
       if(err)return fail(err);form=null;paint()};
     del.onclick=async()=>{if(!confirm('Delete the campaign "'+(src.name||'')+'"?'+NL+NL+'Posts already logged for it stay in the list.'))return;
-      const err=await saveList(same(nl=>{nl.splice(at,1);return nl}));if(err)return fail(err);form=null;paint()};
+      const err=await trySave(same(nl=>{nl.splice(at,1);return nl}));if(err)return fail(err);form=null;paint()};
     sec.append(msg,row(sv,cancel,el('span','grow'),del));
     setTimeout(()=>name.focus(),0);return sec}
 
