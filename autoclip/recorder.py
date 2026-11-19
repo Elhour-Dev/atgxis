@@ -81,6 +81,12 @@ def ad_break_announced(log_path: Path) -> bool:
     return bool(AD_WORDS.search(streamlink_tail(log_path)))
 
 
+def stream_opened(log_path: Path) -> bool:
+    """Streamlink got as far as opening the stream. If no video follows, Twitch is almost certainly playing the pre-roll ad (which
+    streamlink skips silently, often WITHOUT printing an ad notice yet). Restarting then only earns a fresh pre-roll ad each time."""
+    return "Opening stream" in streamlink_tail(log_path)
+
+
 def last_words(log_path: Path, limit: int = 220) -> str:
     lines = [ln.strip() for ln in streamlink_tail(log_path).splitlines() if ln.strip()]
     return lines[-1][:limit] if lines else ""
@@ -186,7 +192,8 @@ class Recorder(threading.Thread):
                         if idle > 15:
                             self.live.clear()                      # the status must not say "live" while no video arrives
                         if idle > (self.cfg.stall_s if produced else START_WAIT_S):
-                            ad = ad_break_announced(slog_path)
+                            opened = not produced and stream_opened(slog_path)
+                            ad = opened or ad_break_announced(slog_path)
                             self.paused_for_ad = ad
                             if should_restart(idle, bool(produced), ad, self.cfg):
                                 if produced:
@@ -195,8 +202,8 @@ class Recorder(threading.Thread):
                                 break
                             if not ad_noted:
                                 ad_noted = True
-                                log.info("streamlink is paused for a Twitch ad break: waiting for it to end (up to %ds) instead of restarting",
-                                         self.cfg.ad_stall_s)
+                                log.info("streamlink is paused for a Twitch ad break%s: waiting for it to end (up to %ds) instead of restarting",
+                                         " (stream opened, no video yet: most likely the pre-roll ad)" if opened else "", self.cfg.ad_stall_s)
                     if time.time() - last_clean >= 2.0:                  # pruning twice a second was wasted work
                         last_clean = time.time()
                         self._janitor()

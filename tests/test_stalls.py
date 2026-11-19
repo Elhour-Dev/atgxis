@@ -1,6 +1,6 @@
 """A paused stream (Twitch ad break) is not a dead stream: no restart loop, and streamlink's own words are kept for diagnosis."""
 from autoclip.config import Config
-from autoclip.recorder import ad_break_announced, last_words, should_restart, streamlink_cmd, streamlink_tail
+from autoclip.recorder import ad_break_announced, last_words, should_restart, stream_opened, streamlink_cmd, streamlink_tail
 
 CFG = Config()                                    # stall_s 45, ad_stall_s 240
 
@@ -37,6 +37,14 @@ def test_streamlink_messages_are_read_for_ad_breaks_and_quoted(tmp_path):
     assert not ad_break_announced(p)
     p.write_text("x" * 50000 + "\n[twitch][info] Waiting for pre-roll ads to finish, be patient\n")
     assert ad_break_announced(p) and len(streamlink_tail(p)) <= 4000
+
+
+def test_an_opened_stream_without_video_counts_as_a_pre_roll_ad(tmp_path):
+    p = tmp_path / "source.log"
+    p.write_text("[cli][info] Found matching plugin twitch for URL x\n")
+    assert not stream_opened(p)                                   # stuck before the stream even opened: a real hang, restart is right
+    p.write_text("[cli][info] Opening stream: 1080p60 (hls)\n")
+    assert stream_opened(p) and not ad_break_announced(p)         # opened, no ad notice (yet): still an ad until proven otherwise
 
 
 def test_streamlink_logs_at_info_level_so_ad_notices_are_not_lost():
@@ -198,3 +206,21 @@ def test_check_debug_asks_streamlink_for_its_detailed_log(tmp_path, monkeypatch,
     assert cli.main(["check", "ishowspeed", "--seconds", "1", "--debug", "--out", str(tmp_path / "c")]) == 1
     out = capsys.readouterr().out
     assert "--loglevel debug" in out and "STUCK" in out and "Test-NetConnection gql.twitch.tv" in out
+
+
+SILENT_OPEN = "import sys, time; sys.stderr.write('[cli][info] Opening stream: 1080p60 (hls)\\n'); sys.stderr.flush(); time.sleep(60)"
+
+
+@needs_ffmpeg
+def test_opened_stream_with_no_video_is_not_abandoned_after_the_start_wait(tmp_path, caplog, monkeypatch):
+    import autoclip.recorder as r
+    monkeypatch.setattr(r, "START_WAIT_S", 2)
+    caplog.set_level("INFO")
+    stop = threading.Event()
+    rec = Recorder(Config(buffer_dir=str(tmp_path), segment_s=1, stall_s=2, ad_stall_s=60), "x", stop, "t", source_cmd=[sys.executable, "-c", SILENT_OPEN])
+    rec.defer_cleanup = True
+    rec.start()
+    time.sleep(6)
+    stop.set(); rec.join(20); rec.cleanup()
+    assert "most likely the pre-roll ad" in caplog.text
+    assert "capture ended without any video" not in caplog.text.split("most likely the pre-roll ad")[0]
