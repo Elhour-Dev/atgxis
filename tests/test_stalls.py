@@ -31,6 +31,10 @@ def test_streamlink_messages_are_read_for_ad_breaks_and_quoted(tmp_path):
     assert last_words(p).endswith("advertisement break of 30 seconds")
     p.write_text("[cli][info] Opening stream: 1080p60 (hls)\n[stream.hls][warning] Failed to reload playlist: Read timed out\n")
     assert not ad_break_announced(p) and "Read timed out" in last_words(p)
+    p.write_text("[cli][info] Opening stream: 1080p60 (hls)\n[plugins.twitch][info] Will skip ad segments\n")      # the real streamlink 8.6.3 wording
+    assert ad_break_announced(p)
+    p.write_text("[cli][info] Loading a playlist; downloads and uploads fine\n")                                    # "ads" inside other words: no
+    assert not ad_break_announced(p)
     p.write_text("x" * 50000 + "\n[twitch][info] Waiting for pre-roll ads to finish, be patient\n")
     assert ad_break_announced(p) and len(streamlink_tail(p)) <= 4000
 
@@ -120,8 +124,10 @@ def test_diagnose_stream_says_what_it_means():
     assert off[0] == "NO VIDEO arrived." and any("offline" in x for x in off)
     net = cli.diagnose_stream("[stream.hls][error] Unable to open URL: HTTPSConnectionPool: Read timed out", 0, 20)
     assert any("Network problem" in x and "1.1.1.1" in x for x in net)
-    ad = cli.diagnose_stream("[plugins.twitch][info] Detected advertisement break of 30 seconds", 0, 20)
-    assert any("ad break" in x for x in ad)
+    ad = cli.diagnose_stream("[plugins.twitch][info] Will skip ad segments", 0, 20)             # what a real Kai Cenat check printed
+    assert any("AD BREAK" in x and "--seconds 120" in x for x in ad)
+    late = cli.diagnose_stream("[plugins.twitch][info] Will skip ad segments", 5_000_000, 45, first_video_s=31)
+    assert late[0].startswith("OK") and "31 s" in late[1] and "ad" in late[1]
     assert any("403 Client Error: Forbidden" and "refuses access" in x for x in cli.diagnose_stream("403 Client Error: Forbidden for url", 0, 20))
     nothing = cli.diagnose_stream("", 0, 20)
     assert "No clear reason" in " ".join(nothing) and any("winget upgrade Streamlink" in x for x in nothing)
@@ -165,3 +171,15 @@ def test_a_capture_that_dies_at_once_logs_what_streamlink_said(tmp_path, caplog)
     assert rec._run_once() == 0
     assert "capture ended without any video (streamlink said: error: Unable to open URL: Read timed out)" in caplog.text
     assert list(rec.root.iterdir()) == []                        # and still no leftover folder
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="uses a shell script as a fake streamlink")
+def test_check_waits_out_an_ad_break_and_reports_how_long_it_took(tmp_path, monkeypatch, capsys):
+    """The real case: 'Will skip ad segments', no video for a while, then video. A fixed 20 s test called this broken."""
+    monkeypatch.setenv("AUTOCLIP_CONFIG_DIR", str(tmp_path / "cfg"))
+    exe = fake_streamlink(tmp_path, '[ "$1" = "--version" ] && { echo "streamlink 8.6.3"; exit 0; }\n'
+                                    'echo "[plugins.twitch][info] Will skip ad segments" >&2\nsleep 4\nhead -c 3000000 /dev/zero\n')
+    monkeypatch.setenv("PATH", f"{exe}{os.pathsep}{os.environ['PATH']}")
+    assert cli.main(["check", "kaicenat", "--seconds", "1", "--out", str(tmp_path / "c")]) == 0      # asked for 1 s, waited the ad out
+    out = capsys.readouterr().out
+    assert "Twitch is showing an ad first" in out and "first video after" in out and "OK: video arrives" in out
