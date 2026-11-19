@@ -278,9 +278,12 @@ Taste decides *which* clips go out; style decides *how*: the trim, captions, tit
   go back to the plain suggestions.
 
 ## 💰 Paid clipping campaigns (Content Rewards and the like)
-Press **💰 Campaigns** in the review page. You fill in `campaigns.json` there (it lives in your settings folder,
-`%APPDATA%\autoclip\campaigns.json`, so `git pull` never touches it). **Check and save** refuses anything wrong and says which
-campaign and field; nothing is saved until it is all right. **Insert example** shows every field:
+Press **💰 Campaigns** in the review page, then **+ Add campaign**: a form asks for the campaign's name, its page link, the
+streamers (click one you already clip, or paste their twitch.tv link), the platforms it pays for, the pay, the end date and its rules
+(disclosure text, hashtags, what must stay visible, clip length). **Edit** next to a campaign changes it (renaming keeps its posts and
+stats); **Delete campaign** removes it. Everything is checked before it is saved, and the form says what to fix.
+It is stored in `campaigns.json` in your settings folder (`%APPDATA%\autoclip\campaigns.json`, so `git pull` never touches it);
+**Advanced: edit campaigns.json directly** shows the file itself. The fields, as the file names them:
 
 | Field | Meaning |
 |---|---|

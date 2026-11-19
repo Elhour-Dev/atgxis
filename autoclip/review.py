@@ -659,6 +659,7 @@ class Store:
         camps, problems = campaigns.load_all()
         rows = campaigns.posts()
         return {"text": campaigns.raw_text(), "example": json.dumps(campaigns.EXAMPLE, indent=2), "path": str(campaigns.path()),
+                "exists": campaigns.path().is_file(),
                 "campaigns": camps, "problems": problems, "stats": {c["id"]: campaigns.stats(c, rows) for c in camps},
                 "live": {c["id"]: campaigns.live_reason(c, None, rows) for c in camps}, "posts": rows, "to_submit": campaigns.to_submit_groups()}
 
