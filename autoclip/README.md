@@ -11,7 +11,7 @@ around each moment. You review the clips afterwards in a local web page. Free, r
    winget install Gyan.FFmpeg
    winget install Streamlink.Streamlink
    winget install yt-dlp.yt-dlp          # only needed for YouTube channel / @handle links
-   pip install chat-downloader           # only needed for YouTube
+   pip install chat-downloader           # optional: a backup YouTube chat reader (YouTube chat is read without it)
    ```
    Close and reopen PowerShell so the new tools are on PATH.
 3. In the project folder:
@@ -326,7 +326,8 @@ Clips start too late/early -> change `pre_s`. Always check the first few streams
 
 ## Limits (be aware)
 * Chat-based: moments nobody reacts to in chat are missed; clip *quality* still needs your review.
-* **YouTube chat uses an unofficial feed** (`chat-downloader`) and may break when YouTube changes it.
+* **YouTube chat uses an unofficial feed** (the one YouTube's own page uses; `chat-downloader`, if installed, is tried when it fails)
+  and may break when YouTube changes it. On a slow connection the first connect can take ~20 s (the watch page is large).
 * Twitch ads can briefly interrupt the video; only streamlink's behaviour applies. If the channel requires login/subscription, it can't be recorded.
 * Needs a live stream (no VODs) — for VODs use the chat-replay download instead.
 
