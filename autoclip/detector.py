@@ -106,6 +106,8 @@ class SpikeDetector:
         self.near_run = 0
         self.near_flag = False
         self.chat_ok = True             # False while the chat connection is down: silence then is not "quiet chat"
+        self.learned = 0                # seconds of REAL chat learned so far (the warm-up counts these, not the clock)
+        self.ready = False              # True once `learned` reached warmup_s: clipping is active
 
     # ---- input -------------------------------------------------------------------------------
     def add(self, ev: ChatEvent) -> None:
@@ -153,10 +155,13 @@ class SpikeDetector:
         return self._baseline()
 
     def warmup_left(self) -> int:
-        """Seconds of baseline learning still to go (0 = clipping is active)."""
-        if self.first_sec is None or self.last_sec is None:
-            return self.cfg.warmup_s
-        return max(0, self.cfg.warmup_s - (self.last_sec - self.first_sec))
+        """Seconds of chat still to be learned before clipping starts (0 = active). Seconds in which the chat connection was down,
+        or that were a raid, do not count: they say nothing about what normal chat looks like."""
+        return max(0, self.cfg.warmup_s - self.learned)
+
+    def spike_bar(self) -> float:
+        """How many different chatters in one window it currently takes to count as a spike."""
+        return self._threshold(self._baseline())
 
     def pop_notes(self) -> list[str]:
         n, self.notes = self.notes, []
@@ -211,7 +216,8 @@ class SpikeDetector:
 
         if self.state == "idle":
             base = self._baseline()
-            warm = (s - self.first_sec) >= c.warmup_s
+            warm = self.learned >= c.warmup_s
+            self.ready = self.ready or warm
             boost = self._audio_boost(s)
             thr = self._threshold(base, boost)
             if warm and s >= self.cooldown_until and s >= self.raid_until:
@@ -240,6 +246,7 @@ class SpikeDetector:
                 # only learn "normal" from quiet times, never from raids, spikes or a dead chat connection
                 if s >= self.raid_until and self.chat_ok:
                     self.samples.append((s, value))
+                    self.learned += 1
                 while self.samples and self.samples[0][0] < s - c.baseline_s:
                     self.samples.popleft()
 
