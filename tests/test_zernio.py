@@ -196,3 +196,16 @@ def test_review_server_endpoints(world):
     assert KEY not in json.dumps(call("/api/quick")[1])
     assert call("/api/quick/disconnect", {})[0] == 200 and call("/api/quick")[1]["saved"] is False
     srv.shutdown()
+
+
+def test_profile_given_as_an_object_is_sent_as_a_plain_id(world):
+    F.accounts[0]["profileId"] = {"_id": "P1", "name": "Main"}          # what Zernio really returns: "expected string, received object"
+    zernio.connect(KEY)
+    assert accounts.get("zernio")["accounts"]["instagram"]["profileId"] == "P1"
+    accounts.update("zernio", accounts={**accounts.get("zernio")["accounts"], "tiktok": {"id": "A-TT", "name": "x", "profileId": {"_id": "P1"}}})
+    zernio.zernio_upload(job("tiktok", world))                          # an account saved by the earlier version still works
+    assert F.last_post["profileId"] == "P1"
+    F.accounts[0]["profileId"] = None
+    zernio.connect(KEY)
+    zernio.zernio_upload(job("instagram", world))
+    assert "profileId" not in F.last_post                               # no profile known: omitted, never an object

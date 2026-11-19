@@ -35,6 +35,13 @@ def covers(platform: str) -> bool:
     return saved() and platform in (config().get("accounts") or {})
 
 
+def _pid(v) -> str:
+    """Zernio sends a profile as an object ({"_id": ..., "name": ...}) in some replies and as a plain id in others; posts want the id."""
+    if isinstance(v, dict):
+        v = v.get("_id") or v.get("id")
+    return v if isinstance(v, str) else ""
+
+
 def _auth(key: str | None = None) -> dict:
     return {"Authorization": f"Bearer {key or config().get('api_key', '')}"}
 
@@ -62,7 +69,7 @@ def _sync(key: str) -> dict:
     for a in active:
         pl = str(a.get("platform", "")).lower()
         if pl in ROUTED and pl not in found and a.get("_id"):
-            found[pl] = {"id": a["_id"], "name": a.get("username") or a.get("displayName") or "", "profileId": a.get("profileId", "")}
+            found[pl] = {"id": a["_id"], "name": a.get("username") or a.get("displayName") or "", "profileId": _pid(a.get("profileId"))}
     return {"accounts": found, "total": len(active)}
 
 
@@ -134,8 +141,8 @@ def zernio_upload(job: Job) -> Result:
     body: dict = {"content": job.text, "title": job.title[:100],
                   "mediaItems": [{"type": "video", "url": up["publicUrl"], "filename": job.video.name, "size": size, "mimeType": "video/mp4"}],
                   "platforms": [{"platform": job.platform, "accountId": acct["id"]}], "publishNow": True}
-    if acct.get("profileId"):
-        body["profileId"] = acct["profileId"]
+    if _pid(acct.get("profileId")):                                    # also repairs accounts saved by an earlier version
+        body["profileId"] = _pid(acct["profileId"])
     draft = job.platform == "tiktok" and c.get("tiktok_mode") == "draft"
     if job.platform == "tiktok":
         body["tiktokSettings"] = {"privacy_level": "PUBLIC_TO_EVERYONE", "allow_comment": True, "allow_duet": True, "allow_stitch": True,

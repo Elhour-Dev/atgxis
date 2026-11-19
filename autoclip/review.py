@@ -133,7 +133,7 @@ function render(){
     let getText=()=>({title:'',body:''});
     {const d=c.description||{title:'',body:'',alts:[]},det=el('details');det.open=!!openPost.get(c.id);det.ontoggle=()=>openPost.set(c.id,det.open);getText=()=>({title:ti.value,body:ta.value});
       det.append(el('summary',null,'Post text: title + description ('+(d.category||'')+')'));
-      var ti=el('input');ti.type='text';ti.value=d.title||'';var ta=el('textarea');ta.rows=4;ta.value=d.body||'';
+      let ti=el('input');ti.type='text';ti.value=d.title||'';let ta=el('textarea');ta.rows=4;ta.value=d.body||'';
       let timer;const save=()=>{clearTimeout(timer);timer=setTimeout(()=>post('/api/describe',{id:c.id,title:ti.value,body:ta.value}),600)};
       ti.oninput=save;ta.oninput=save;let alts=(d.alts||[]).slice();let ai=Math.max(alts.indexOf(d.title),0);const hint=el('div','hint');
       const fetchNew=async listen=>{hint.textContent=listen?'Listening to the clip (first time can take a minute)...':'Thinking up new titles...';
