@@ -11,6 +11,7 @@ cut_mode = "copy"       # "copy" = instant draft (recommended). "encode" = exact
 clip_len_s = 30         # every finished clip is exactly this long
 pre_s = 20              # draft context before the spike (free in copy mode)
 post_s = 12
+# min_clip_s = 15          # still clip a moment when less than half the window is in the buffer (after an ad break or restart), if this many seconds of video exist
 reaction_lag_s = 8      # chat reacts ~8 s after the moment; raise it if the 30 s window starts too late
 
 # --- captions ---

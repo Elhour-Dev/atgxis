@@ -78,6 +78,12 @@ def _low_priority(cmd: list[str], cfg: Config) -> tuple[list[str], dict]:
     return ([nice, "-n", "10", *cmd] if nice else cmd), {}
 
 
+def enough_cover(covered: float, wanted: float, min_s: float) -> bool:
+    """Is what the buffer holds worth a clip? Half of the window, or at least `min_s` seconds of real video (a stream that just
+    came back from an ad break / restart has less than the full window, but a short clip beats losing the moment)."""
+    return covered >= 0.5 * wanted or covered >= min_s
+
+
 def cut_clip(segs: list[Segment], a: float, b: float, out: Path, cfg: Config) -> bool:
     """Write wall-clock window [a, b] to `out`. Returns False if the buffer does not cover enough of it."""
     segs = sorted(segs, key=lambda s: s.t0)
@@ -87,7 +93,7 @@ def cut_clip(segs: list[Segment], a: float, b: float, out: Path, cfg: Config) ->
         return False
     start, end = max(a, segs[0].t0), min(b, segs[-1].t1)
     covered = sum(min(s.t1, end) - max(s.t0, start) for s in segs if s.t1 > start and s.t0 < end)
-    if end - start < 3 or covered < 0.5 * (b - a):
+    if end - start < 3 or not enough_cover(covered, b - a, cfg.min_clip_s):
         log.warning("buffer covers only %.0fs of %.0fs wanted; skipping", covered, b - a)
         return False
     listing = out.with_suffix(".txt")
@@ -124,7 +130,7 @@ def _filters(cfg: Config, vertical: bool, ass: str | None, layout: dict | None =
     return ["-filter_complex", graph, "-map", "[v]", "-map", "0:a?"]
 
 
-def cut_draft(segs: list[Segment], a: float, b: float, out: Path) -> tuple[list[Segment], float] | None:
+def cut_draft(segs: list[Segment], a: float, b: float, out: Path, min_s: float = 15.0) -> tuple[list[Segment], float] | None:
     """FAST draft: join the buffered segments covering [a,b] with stream copy (no re-encode, ~instant, lossless).
     The draft starts/ends on segment boundaries, so it is a few seconds wider than asked; trim it in the review page.
     Returns (segments used, wall-clock start of the draft) or None if the buffer does not cover the window."""
@@ -133,8 +139,8 @@ def cut_draft(segs: list[Segment], a: float, b: float, out: Path) -> tuple[list[
         log.warning("nothing in buffer for that window")
         return None
     covered = sum(min(s.t1, b) - max(s.t0, a) for s in sel)
-    if covered < 0.5 * (b - a):
-        log.warning("buffer covers only %.0fs of %.0fs wanted; skipping", covered, b - a)
+    if not enough_cover(covered, b - a, min_s):
+        log.warning("buffer covers only %.0fs of %.0fs wanted (less than %.0fs): skipping", covered, b - a, min_s)
         return None
     listing = out.with_suffix(".txt")
     listing.write_text("".join("file '{}'\n".format(s.path.resolve().as_posix().replace("'", "'\\''")) for s in sel))
