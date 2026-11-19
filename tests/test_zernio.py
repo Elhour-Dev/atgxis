@@ -16,6 +16,7 @@ class Fake:
     accounts = []
     post_state = "published"
     polls_until_done = 1
+    pending_error = ""
     calls = []
     last_post = None
     uploaded = 0
@@ -55,7 +56,7 @@ class H(BaseHTTPRequestHandler):
             state = F.post_state if F.polls_until_done <= 0 else "publishing"
             return self.reply(200, {"post": {"_id": "POST1", "status": state, "platforms": [
                 {"platform": F.last_post["platforms"][0]["platform"], "status": state, "platformPostUrl": "https://example.com/p/1",
-                 "error": "Instagram rejected the video" if state == "failed" else ""}]}})
+                 "error": "Instagram rejected the video" if state == "failed" else F.pending_error}]}})
         self.reply(404, {"error": "nope"})
 
     def do_POST(self):
@@ -85,6 +86,7 @@ def world(tmp_path, monkeypatch):
     F.accounts = [{"_id": "A-IG", "platform": "instagram", "profileId": "P1", "username": "@streamclips", "isActive": True},
                   {"_id": "A-TT", "platform": "tiktok", "profileId": "P1", "username": "@streamclips", "isActive": True}]
     F.post_state, F.polls_until_done, F.calls, F.last_post, F.uploaded = "published", 1, [], None, 0
+    F.pending_error = ""
     srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     BASE["url"] = f"http://127.0.0.1:{srv.server_address[1]}"
@@ -163,7 +165,16 @@ def test_slow_publishing_is_not_called_done(world, monkeypatch):
     monkeypatch.setattr(publish, "POLL_MAX_S", 0.05)
     F.polls_until_done = 10 ** 6
     r = zernio.zernio_upload(job("instagram", world))
-    assert r.status == "draft" and "still publishing" in r.message
+    assert r.status == "draft" and "still publishing" in r.message and "dashboard" in r.message
+
+
+def test_slow_publishing_shows_zernios_reason(world, monkeypatch):
+    zernio.connect(KEY)
+    monkeypatch.setattr(publish, "POLL_MAX_S", 0.05)
+    F.polls_until_done = 10 ** 6
+    F.pending_error = "TikTok allows 15 video posts per account per day. This post is queued."
+    r = zernio.zernio_upload(job("tiktok", world))
+    assert r.status == "draft" and "15 video posts per account per day" in r.message
 
 
 def test_auto_provider_routes_per_platform(world, monkeypatch):

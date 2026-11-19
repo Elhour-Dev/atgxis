@@ -114,12 +114,12 @@ def _outcome(d: dict, platform: str) -> tuple[str, str | None, str]:
     link = mine.get("platformPostUrl") or mine.get("postUrl") or mine.get("url")
     err = mine.get("error") or mine.get("errorMessage") or post.get("error") or ""
     if isinstance(err, dict):
-        err = err.get("message", "")
+        err = err.get("message") or ""
     if state in DONE:
         return "done", link, ""
     if state in FAILED:
         return "failed", link, str(err) or f"Zernio reports the post as {state}"
-    return "pending", link, ""
+    return "pending", link, str(err).strip()                                  # e.g. "queued until tomorrow: daily limit"
 
 
 def zernio_upload(job: Job) -> Result:
@@ -164,6 +164,8 @@ def zernio_upload(job: Job) -> Result:
                 return Result(True, "draft", "Sent to your TikTok drafts through Zernio. Open TikTok, check it and press Post.", link)
             return Result(True, "done", "Published through Zernio.", link)
         if not pid or waited > publish.POLL_MAX_S:
+            if msg:
+                return Result(True, "draft", "Sent to Zernio, which is still publishing it: " + msg, link)
             return Result(True, "draft", "Sent to Zernio, which is still publishing it. Check the Zernio dashboard in a few minutes.", link)
         publish._sleep(publish.POLL_EVERY_S)
         waited += publish.POLL_EVERY_S
