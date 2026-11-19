@@ -147,6 +147,16 @@ class SpikeDetector:
             self.last_sec = s
         return out
 
+    def normal_level(self) -> float:
+        """The channel's normal number of chatters per window right now (what spikes are measured against)."""
+        return self._baseline()
+
+    def warmup_left(self) -> int:
+        """Seconds of baseline learning still to go (0 = clipping is active)."""
+        if self.first_sec is None or self.last_sec is None:
+            return self.cfg.warmup_s
+        return max(0, self.cfg.warmup_s - (self.last_sec - self.first_sec))
+
     def pop_notes(self) -> list[str]:
         n, self.notes = self.notes, []
         return n

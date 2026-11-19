@@ -9,12 +9,15 @@ import sys
 import tempfile
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from . import config as cfgmod
 from . import settings
-from .worker import ChannelWorker
+from .cutter import pick_encoder
+from .lanes import Lanes
+from .worker import ChannelWorker, parse_target
+
+log = logging.getLogger("autoclip")
 
 
 def _setup_logging():
@@ -68,8 +71,50 @@ def _log_to_file(folder: Path) -> Path:
     return f
 
 
+def plan_targets(targets: list[str]) -> list[str]:
+    """Check every target BEFORE anything starts, and watch each stream once: the same channel listed twice would run two
+    recorders in one buffer folder and clip every moment twice. Raises ValueError (with the offending text) for rubbish."""
+    seen: dict[str, str] = {}
+    for t in targets:
+        _, label, _ = parse_target(t)
+        if label in seen:
+            print(f"NOTE: {t!r} is the same stream as {seen[label]!r}: watching it once.")
+            continue
+        seen[label] = t
+    return list(seen.values())
+
+
+def resource_notes(cfg, n: int) -> list[str]:
+    """What N streams at once will ask of this PC (rough numbers, so nobody finds out when the disk is full)."""
+    if n < 2:
+        return []
+    base = Path(cfg.buffer_dir) if cfg.buffer_dir else Path(tempfile.gettempdir())
+    need = n * 0.7 * cfg.buffer_s / 600                      # ~0.7 GB per 10 min of 1080p60
+    notes = [f"{n} streams at once: about {need:.1f} GB of rolling buffer in {base} and ~{n * 8} Mbit/s download at best quality. "
+             f"All 9:16 renders share {cfg.cut_workers} slot(s), best clip first; draft cuts are never held up by them."]
+    try:
+        free = shutil.disk_usage(base).free / 1e9
+        if free < need * 1.5:
+            notes.append(f"WARNING: only {free:.1f} GB free there. Set buffer_dir in config.toml to a bigger drive, or watch fewer streams.")
+    except OSError:
+        pass
+    return notes
+
+
+def status_block(workers: list[ChannelWorker], lanes: Lanes, cfg) -> str:
+    head = f"status: {sum(1 for w in workers if w.is_alive())}/{len(workers)} streams running"
+    if cfg.vertical == "auto":
+        head += f" | 9:16 renders: {lanes.encodes.running} running, {lanes.encodes.waiting} waiting"
+    return "\n".join([head] + ["  " + w.status_line() for w in workers])
+
+
 def cmd_run(args) -> int:
     cfg = _load_cfg(args)
+    try:
+        targets = plan_targets(args.targets)
+    except ValueError as e:
+        print(f"ERROR: {e}\nUse a Twitch name or link, or a YouTube live link.")
+        return 2
     logfile = _log_to_file(Path(cfg.out_dir))
     src = "config.toml" if (args.config or Path("config.toml").is_file()) else "built-in defaults (no config.toml found)"
     print(f"Settings: {src} | sensitivity: mult {cfg.mult}{' (eases to 1.8 on big chats)' if cfg.auto_mult else ''}, "
@@ -79,22 +124,34 @@ def cmd_run(args) -> int:
               f"so spikes on a calm stretch are skipped. 6-15 is typical; set min_users in config.toml.")
     print(f"Clips: {Path(cfg.out_dir).resolve()}" + (f"  | finished clips also copied to: {cfg.export_dir}" if cfg.export_dir else "")
           + f"\nLog: {logfile}")
+    for note in resource_notes(cfg, len(targets)):
+        print(note)
+    if cfg.vertical == "auto":
+        pick_encoder(cfg)                         # find the hardware encoder once now, not during the first clip
     stop = threading.Event()
-    pool = ThreadPoolExecutor(max_workers=cfg.cut_workers, thread_name_prefix="cut")
-    workers = [ChannelWorker(cfg, t, Path(cfg.out_dir), stop, pool=pool) for t in args.targets]
+    lanes = Lanes(cfg)                            # shared by all streams: bounded encodes, draft cuts that never wait
+    workers = [ChannelWorker(cfg, t, Path(cfg.out_dir), stop, lanes=lanes) for t in targets]
     for w in workers:
         w.start()
-        time.sleep(1)
+        time.sleep(1)                             # stagger the connections (chat servers and streamlink dislike a burst)
     print(f"Clipping {len(workers)} stream(s).  Review later with:  python -m autoclip review\nCtrl+C to stop.")
+    next_status = time.time() + max(cfg.status_every_s, 1)
     try:
         while any(w.is_alive() for w in workers):
             time.sleep(0.5)
+            if cfg.status_every_s > 0 and time.time() >= next_status:
+                next_status = time.time() + cfg.status_every_s
+                log.info("%s", status_block(workers, lanes, cfg))
     except KeyboardInterrupt:
         print("\nStopping (finishing clips in progress)...")
         stop.set()
-        for w in workers:
-            w.join(timeout=120)
-    pool.shutdown(wait=True)
+    for w in workers:
+        w.join(timeout=120)
+    # On Ctrl+C the renders still waiting in line are skipped (the drafts exist; Export in the review page makes them);
+    # the ones already running are finished. Otherwise stopping could take minutes.
+    dropped = lanes.shutdown(cancel_queued_encodes=stop.is_set())
+    if dropped:
+        print(f"{dropped} queued 9:16 render(s) were skipped: those clips are still there as drafts, press Export in the review page.")
     return 0
 
 

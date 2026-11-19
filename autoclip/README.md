@@ -29,12 +29,34 @@ python -m autoclip run shroud xqc https://www.youtube.com/watch?v=VIDEOID   # se
 python -m autoclip review                                   # later: opens the review page
 ```
 * The first **90 s** of each run is spent learning the channel's normal chat level; nothing is clipped yet.
-* Leave it running during the stream. **Ctrl+C** stops it cleanly (clips in progress are finished).
+* Leave it running during the stream. **Ctrl+C** stops it cleanly: a moment that was just found is still cut (it is not lost), renders
+  already running are finished, and renders still waiting in line are skipped (their draft exists; press **Export** in the review page).
 * Clips land in `clips\<channel>\<date_time>\` as **drafts**: ~40 s of context around the moment, made by stream copy in
   under a second (no CPU use, no quality loss). Nothing is encoded until you ask.
 * In the review page (ranked best-first) each draft opens already trimmed to a **suggested 30 s window**. Fine-tune with the
   *start = player* / *end = player* buttons (the player loops your trim), tick **Vertical 9:16** and/or **Captions**, and press
   **Export clip**: ONE encode does the exact trim + layout + captions. Then **Keep / Trash**; "Delete trashed files" frees disk.
+
+## Several streams at once
+`python -m autoclip run shroud xqc https://www.youtube.com/watch?v=VIDEOID` watches every stream at the same time (Twitch and YouTube can be
+mixed). Each stream gets its own recorder, chat reader and baseline, so a quiet channel and a huge one are judged separately. What is
+**shared** is the expensive part, so cost does not multiply with the number of streams:
+* **Draft cuts never wait.** A draft is a stream copy (milliseconds), done in its own lane. Before, drafts and 9:16 renders shared one
+  queue: when 4 streams spiked together, two drafts sat behind two long renders until their video had been deleted from the buffer, and
+  **2 of 4 clips were lost** (measured). Now all 4 are saved at once.
+* **9:16 renders share `cut_workers` slots (default 2) across ALL streams, best clip first.** If `max_encode_backlog` (6) renders are already
+  waiting, new clips simply stay drafts (logged); press **Export** for them in the review page.
+* **Cheaper renders:** frames are dropped to 30 fps *before* scaling/blurring instead of after (bit-identical picture, ~1.7x faster on a
+  60 fps stream), and the blurred background is computed at quarter size (~2.8x faster again; visually the same). Measured on 15 s of
+  1080p60 (4-core box, real defaults): the blurred layout went from **50.8 s to 10.4 s**. The webcam/gameplay *split* layout has no big blur,
+  so it only gains ~7% (10.2 s to 9.5 s).
+* Every `status_every_s` seconds (60) you get one overview: which streams are live, chat rate vs normal, spikes/clips, render queue.
+* The same channel listed twice is watched once; a typo in any target is reported before anything starts.
+* At start with 2+ streams it prints the disk (rolling buffer, ~0.7 GB per stream per 10 min) and bandwidth (~8 Mbit/s per stream at
+  `best`) you are asking for, and warns when the buffer drive is too small. Put `buffer_dir` on a big drive.
+* Idle cost is small: about 2% of one core per stream (almost all of it measuring audio loudness of each 4 s segment).
+Rule of thumb: the limits are your download speed and disk, not the program. Add `quality = "720p60,720p,best"` to `config.toml` to halve both
+(clips will be softer).
 
 ## How it avoids the usual problems
 
@@ -49,7 +71,7 @@ python -m autoclip review                                   # later: opens the r
 | Video and chat drift apart (ads, drops, reconnects) | Every video segment and chat message is stamped with **wall-clock** time, never stream-relative time. |
 | Stream drops / goes offline | Recorder reconnects with back-off and polls politely while offline; chat readers reconnect forever. |
 | Disk fills up | Rolling 10-minute buffer is auto-pruned (stream copy, no re-encode); stops cutting past `max_clips_gb`. |
-| CPU load on a gaming PC | Buffer and drafts are **never re-encoded** (a 48 s draft takes 0.2 s vs 16 s to encode: 70x faster). Only clips you export are encoded, one pass, bounded across all streams. Optional GPU encoder. |
+| CPU load on a gaming PC | Buffer and drafts are **never re-encoded** (a 48 s draft takes 0.2 s vs 16 s to encode: 70x faster). Only clips you export (and the optional automatic 9:16 renders) are encoded, one pass, bounded across all streams. Optional GPU encoder. |
 | Clips start too early / too late | Finds the second chat actually took off (not the window start: ~9 s tighter), then places a fixed 30 s window around it (lead-in + the chat peak always inside); you fine-tune in the player. |
 | Same moment clipped twice | A new clip overlapping an existing one by 60%+ is skipped. |
 | Windows quirks | No shell tricks, list-style subprocess args, paths with spaces/apostrophes tested, UTF-8 console so emotes cannot crash it. |

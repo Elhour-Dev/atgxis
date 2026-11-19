@@ -70,6 +70,7 @@ class Recorder(threading.Thread):
         self._lock = threading.Lock()
         self.live = threading.Event()
         self.on_segments = None          # optional callback(list[Segment]) for every batch of new segments
+        self.defer_cleanup = False       # True: the owner (ChannelWorker) deletes the buffer via cleanup() once its last cut is done
 
     # ---- queries -----------------------------------------------------------------------------
     def segments_between(self, a: float, b: float) -> list[Segment]:
@@ -101,6 +102,14 @@ class Recorder(threading.Thread):
                 wait = 5.0
                 log.info("stream interrupted; reconnecting")
                 self.stop_evt.wait(3)
+        if not self.defer_cleanup:
+            self.cleanup()
+
+    def cleanup(self) -> None:
+        """Delete the whole rolling buffer. With defer_cleanup the worker calls this AFTER it has cut the clips that were
+        still waiting when Ctrl+C was pressed (they need the video; deleting it at stop time lost them)."""
+        with self._lock:
+            self._segs.clear()
         shutil.rmtree(self.root, ignore_errors=True)
 
     def _run_once(self) -> int:
@@ -111,15 +120,15 @@ class Recorder(threading.Thread):
             sp = subprocess.Popen(src, stdout=subprocess.PIPE, stderr=slog)
             fp = subprocess.Popen(segmenter_cmd(self.cfg), stdin=sp.stdout, stdout=subprocess.DEVNULL, stderr=flog, cwd=run_dir)
             sp.stdout.close()
-            seen, produced, last_new = 0, 0, time.time()
+            offset, produced, last_new, last_clean = 0, 0, time.time(), 0.0
             try:
                 while not self.stop_evt.is_set() and fp.poll() is None:
                     time.sleep(0.5)
-                    rows = self._read_rows(run_dir / "list.csv")
-                    if len(rows) > seen:
+                    rows, offset = self._read_new(run_dir / "list.csv", offset)    # only the new lines: the file grows all day
+                    if rows:
                         now = time.time()
                         t_end, built = now, []
-                        for name, st, en in reversed(rows[seen:]):   # newest first; older ones sit just before it
+                        for name, st, en in reversed(rows):          # newest first; older ones sit just before it
                             built.append(Segment(run_dir / name, t_end - (en - st), t_end))
                             t_end -= en - st
                         with self._lock:
@@ -129,34 +138,44 @@ class Recorder(threading.Thread):
                                 self.on_segments(list(reversed(built)))
                             except Exception:
                                 log.exception("segment callback failed")
-                        seen, produced, last_new = len(rows), len(rows), now
+                        produced += len(rows)
+                        last_new = now
                         self.live.set()
                     elif produced and time.time() - last_new > 45:
                         log.warning("no new video for 45s; restarting capture")
                         break
                     elif not produced and time.time() - last_new > 90:
                         break
-                    self._janitor()
+                    if time.time() - last_clean >= 2.0:                  # pruning twice a second was wasted work
+                        last_clean = time.time()
+                        self._janitor()
             finally:
                 kill(sp)
                 kill(fp)
         return produced
 
     @staticmethod
-    def _read_rows(csv: Path) -> list[tuple[str, float, float]]:
+    def _read_new(csv: Path, offset: int) -> tuple[list[tuple[str, float, float]], int]:
+        """Rows added to the segment list since byte `offset` -> (rows, new offset). Re-reading the whole file twice a second
+        costs more every hour (it only ever grows); a half-written last line is left for the next call."""
         try:
-            lines = csv.read_text().splitlines()
+            with open(csv, "rb") as f:
+                f.seek(offset)
+                data = f.read()
         except OSError:
-            return []
+            return [], offset
+        end = data.rfind(b"\n")
+        if end < 0:
+            return [], offset
         rows = []
-        for ln in lines:
+        for ln in data[:end].decode("utf-8", "replace").splitlines():
             parts = ln.split(",")
             if len(parts) >= 3:
                 try:
                     rows.append((parts[0], float(parts[1]), float(parts[2])))
                 except ValueError:
                     pass
-        return rows
+        return rows, offset + end + 1
 
     def _janitor(self):
         cutoff = time.time() - self.cfg.buffer_s

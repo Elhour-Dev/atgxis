@@ -21,6 +21,12 @@ quality = "best"                    # record the stream at its top quality (shar
 encoder = "libx264"                 # "h264_nvenc" (NVIDIA), "h264_qsv" (Intel), "h264_amf" (AMD) = faster cuts
 vertical = "on_demand"              # "auto" also exports a 9:16 of every suggested trim (uses CPU/GPU)
 
+# --- several streams at once ---
+# cut_workers = 2            # 9:16 renders running at the same time, in TOTAL across all streams (raise it with a GPU encoder)
+# max_encode_backlog = 6     # this many renders already waiting -> new clips stay drafts (Export them in the review page)
+# draft_workers = 4          # draft cuts at the same time (cheap stream copies; they never wait for renders)
+# status_every_s = 60        # overview of all streams every N seconds (0 = off)
+
 # --- housekeeping ---
 out_dir = "clips"
 max_clips_gb = 20

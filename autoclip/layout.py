@@ -94,13 +94,21 @@ def _cover(r: dict | None, w: int, h: int, sharpen: float = 0.0) -> str:
             + (f",unsharp=5:5:{amount:.2f}:5:5:0.0" if amount > 0 else ""))
 
 
+def _blur_bg(w: int, h: int) -> str:
+    """Blurred fill for a w x h panel. Blurring at 1/4 size and scaling back up looks the same (it is a blur) but costs about a
+    third of blurring the full 1080x1920 frame, which was the single most expensive step of every vertical render."""
+    sw, sh = _even(w / 4), _even(h / 4)
+    return (f"scale={sw}:{sh}:force_original_aspect_ratio=increase:flags=fast_bilinear,crop={sw}:{sh},"
+            f"boxblur=7:3,scale={w}:{h}:flags=bicubic")
+
+
 def chain(layout: dict | None, sharpen: float = 0.0) -> str:
     """ffmpeg filter_complex text from input [0:v] to output label [v]: 1080x1920."""
     mode = (layout or {}).get("mode", "blur")
     if mode == "crop":
         return f"[0:v]scale=-2:{OUT_H}:{SCALE},crop={OUT_W}:{OUT_H}[v]"
     if mode != "split":
-        return (f"[0:v]split[a][b];[a]scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase:{SCALE},crop={OUT_W}:{OUT_H},boxblur=25:5[bg];"
+        return (f"[0:v]split[a][b];[a]{_blur_bg(OUT_W, OUT_H)}[bg];"
                 f"[b]scale={OUT_W}:-2:{SCALE}[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2[v]")
     lay = validate(layout)
     h1, h2 = heights(lay["split"])
@@ -108,7 +116,7 @@ def chain(layout: dict | None, sharpen: float = 0.0) -> str:
     if lay["game_fit"] == "blur":      # whole gameplay area visible, blurred fill above and below
         g = lay["game"]
         fg = f"{_crop(g)}," if g else ""
-        bottom = (f"[b]split[b1][b2];[b1]scale={OUT_W}:{h2}:force_original_aspect_ratio=increase:{SCALE},crop={OUT_W}:{h2},boxblur=25:5[bg];"
+        bottom = (f"[b]split[b1][b2];[b1]{_blur_bg(OUT_W, h2)}[bg];"
                   f"[b2]{fg}scale={OUT_W}:-2:{SCALE}[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2[bot]")
     else:
         bottom = f"[b]{_cover(lay['game'] or default_game_rect(lay['split']), OUT_W, h2)}[bot]"

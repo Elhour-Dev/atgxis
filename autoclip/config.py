@@ -58,6 +58,9 @@ class Config:
     normalize_audio: bool = True  # loudness-normalize to social-media level (-14 LUFS)
     low_priority: bool = True   # encode at below-normal priority so your game / stream never stutters
     cut_workers: int = 2        # total simultaneous encodes across ALL streams
+    draft_workers: int = 4      # total simultaneous draft cuts across ALL streams (stream copy: light, and never queued behind encodes)
+    max_encode_backlog: int = 6  # if this many 9:16 renders are already waiting, new clips stay drafts (export them in the review page)
+    status_every_s: int = 60    # with several streams: print a one-block overview this often (0 = never)
     vertical: str = "auto"      # "auto" = also export a ready 9:16 of every suggested trim | "on_demand" | "off"
     vertical_mode: str = "blur"  # layout used when a channel has no saved layout: "blur" | "crop"
 

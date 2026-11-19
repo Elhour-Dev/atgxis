@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 from .config import Config
@@ -22,6 +23,7 @@ def _run(cmd: list[str], timeout: int = 300) -> subprocess.CompletedProcess:
 
 
 _ENC_CACHE: dict[str, str] = {}
+_ENC_LOCK = threading.Lock()
 
 
 def pick_encoder(cfg: Config) -> str:
@@ -29,21 +31,22 @@ def pick_encoder(cfg: Config) -> str:
     Many PCs list nvenc in ffmpeg without having the GPU for it, so listing is not enough."""
     if cfg.encoder != "auto":
         return cfg.encoder
-    if "auto" in _ENC_CACHE:
-        return _ENC_CACHE["auto"]
-    chosen = "libx264"
-    listing = _run([ffmpeg_exe(), "-hide_banner", "-encoders"], 30).stdout
-    for enc in ("h264_nvenc", "h264_qsv", "h264_amf"):
-        if enc not in listing:
-            continue
-        probe = _run([ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=black:s=256x256:d=0.2",
-                      "-frames:v", "1", "-c:v", enc, "-f", "null", "-"], 30)
-        if probe.returncode == 0:
-            chosen = enc
-            break
-    log.info("video encoder: %s", chosen)
-    _ENC_CACHE["auto"] = chosen
-    return chosen
+    with _ENC_LOCK:                                   # several streams ask at once: probe the hardware only once
+        if "auto" in _ENC_CACHE:
+            return _ENC_CACHE["auto"]
+        chosen = "libx264"
+        listing = _run([ffmpeg_exe(), "-hide_banner", "-encoders"], 30).stdout
+        for enc in ("h264_nvenc", "h264_qsv", "h264_amf"):
+            if enc not in listing:
+                continue
+            probe = _run([ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=black:s=256x256:d=0.2",
+                          "-frames:v", "1", "-c:v", enc, "-f", "null", "-"], 30)
+            if probe.returncode == 0:
+                chosen = enc
+                break
+        log.info("video encoder: %s", chosen)
+        _ENC_CACHE["auto"] = chosen
+        return chosen
 
 
 def _vcodec(cfg: Config) -> list[str]:
@@ -112,8 +115,11 @@ def _filters(cfg: Config, vertical: bool, ass: str | None, layout: dict | None =
         return ["-vf", ",".join(post)] if post else []
     base = layout if layout else {"mode": cfg.vertical_mode}
     graph = lay.chain(base, getattr(cfg, "sharpen", 0.0))
-    if post:
-        graph += f";[v]{','.join(post)}[vo]"
+    if cfg.out_fps:
+        # fps FIRST: the scaling/blur/overlay below then runs on 30 frames a second instead of 60 (same picture, ~1.7x faster)
+        graph = f"[0:v]fps={cfg.out_fps}[f];" + graph.replace("[0:v]", "[f]", 1)
+    if ass:
+        graph += f";[v]ass={ass}[vo]"                      # captions are drawn last, on the finished 1080x1920 frame
         return ["-filter_complex", graph, "-map", "[vo]", "-map", "0:a?"]
     return ["-filter_complex", graph, "-map", "[v]", "-map", "0:a?"]
 
