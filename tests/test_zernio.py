@@ -220,3 +220,13 @@ def test_profile_given_as_an_object_is_sent_as_a_plain_id(world):
     zernio.connect(KEY)
     zernio.zernio_upload(job("instagram", world))
     assert "profileId" not in F.last_post                               # no profile known: omitted, never an object
+
+
+def test_a_paid_campaign_clip_is_never_declared_non_commercial(world):
+    zernio.connect(KEY, "public")
+    zernio.zernio_upload(job("tiktok", world))
+    assert F.last_post["tiktokSettings"]["commercial_content_type"] == "none"
+    j = job("tiktok", world)
+    j.paid = True
+    r = zernio.zernio_upload(j)
+    assert "commercial_content_type" not in F.last_post["tiktokSettings"] and r.paid_flag is None    # share.run then lists it as not set

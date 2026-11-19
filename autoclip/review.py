@@ -1,6 +1,8 @@
 """Local review page: ranked clips with players, keep / trash / make-vertical buttons. Binds to 127.0.0.1 only."""
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import mimetypes
 import re
@@ -15,7 +17,7 @@ from .config import Config
 from .captions import CaptionsUnavailable, build_ass, cached_words, transcribe, words_in_window
 from . import layout as lay
 import html
-from . import accounts, autopilot, autopilot_page, publish, settings, share, style, taste, zernio      # noqa: F401  (publish / zernio register the 'direct' / 'auto' sharing methods)
+from . import accounts, autopilot, autopilot_page, campaigns, campaigns_page, publish, settings, share, style, taste, zernio      # noqa: F401  (publish / zernio register the 'direct' / 'auto' sharing methods)
 from .cutter import export_clip, grab_frame, probe_size
 from .describe import suggest as suggest_description
 from .facecam import FacecamUnavailable, detect_facecam
@@ -129,7 +131,7 @@ details input[type=text],details input[type=password],details textarea{width:100
 <header class=top><div class=bar><h1>Clip review</h1><nav class=tabs id=tabs></nav><span class=grow></span>
 <button id=upd class="sm good" hidden></button><div class=menu><button id=layoutBtn title="How 9:16 clips are built: where the webcam and the game go, per streamer">📐 Layout</button><div class=menu-list id=layoutList hidden></div></div><div class=menu><button id=setupBtn title="Folders and posting accounts">⚙ Setup ▾</button><div class=menu-list id=setupList hidden>
 <button id=quick title="Post to Instagram + TikTok with one free key">⚡ Quick connect (Instagram + TikTok)</button><button id=accts title="YouTube and advanced: your own developer apps">🔗 Accounts (YouTube, advanced)</button><button id=folders>📁 Folders</button></div></div>
-<button id=ap class=primary title="Learns which clips you keep and can post the good ones for you">🤖 Autopilot</button></div>
+<button id=cpBtn title="Paid clipping campaigns">💰 Campaigns <span class=n id=cpN hidden></span></button><button id=ap class=primary title="Learns which clips you keep and can post the good ones for you">🤖 Autopilot</button></div>
 <div class=sub><select id=s title="Order"><option value=score>Best score first</option><option value=created>Newest first</option><option value=ap>Autopilot pick first</option></select><span class=mut id=count></span><span class=grow></span><span class=keys>Keys: <kbd>K</kbd> keep <kbd>T</kbd> trash <kbd>U</kbd> undo <kbd>←</kbd><kbd>→</kbd> next clip <kbd>Space</kbd> play</span><button id=purge class="danger sm" hidden>Delete trashed files</button></div></header>
 <main><div class=grid id=g></div></main>
 <script>
@@ -181,7 +183,7 @@ async function setStatus(c,st){if(st===c.status)return;
   const nx=leaves?(cards[i+1]||cards[i-1]):cards[i];cur=nx?nx.dataset.id:null;
   if(await post('/api/status',{id:c.id,status:st}))await load(true);focusCur()}
 function focusCur(scroll){const k=[...g.querySelectorAll('.card')].find(x=>x.dataset.id===cur);if(k){k.focus({preventScroll:true});if(scroll!==false)k.scrollIntoView({block:'nearest',behavior:'smooth'})}}
-function sigOf(list){return JSON.stringify(list.map(c=>[c.id,c.status,(c.exports||[]).length,c.shares||null,c.res?c.res[1]:0,c.taste?c.taste.pick:null,c.autopilot?c.autopilot.state:null]))}
+function sigOf(list){return JSON.stringify(list.map(c=>[c.id,c.status,(c.exports||[]).length,c.shares||null,c.res?c.res[1]:0,c.taste?c.taste.pick:null,c.autopilot?c.autopilot.state:null,c.campaign?JSON.stringify([c.campaign.live,c.campaign.ready,c.campaign.problems,c.campaign.posts.length,c.campaign.flags_missing]):null,c.voiceover?c.voiceover.at:null]))}
 function render(){
   sig=sigOf(clips);shownIds=new Set(clips.map(c=>c.id));paintUpd(0);          // whatever redraws, the screen is now up to date
   const s=document.getElementById('s').value,pae=document.activeElement,hadCard=!!(pae&&pae.classList&&pae.classList.contains('card'));paintTabs();
@@ -203,6 +205,7 @@ function render(){
         if(v0.url){const a0=el('a',null,'open');a0.href=safeUrl(v0.url);a0.target='_blank';line.append(' ',a0)}card.append(line)}
       const s0=el('a',null,'Channel');s0.href=c.source_url;s0.target='_blank';card.append(s0);g.append(card);continue}
     {const ab=apBadge(c);if(ab)card.append(ab)}
+    {const cb=cpBadge(c);if(cb)card.append(cb)}
     const v=el('video');v.controls=true;v.preload='metadata';v.src=fileUrl(c,c.file);
     v.onloadedmetadata=()=>{v.currentTime=t.start};
     v.ontimeupdate=()=>{if(!v.paused&&v.currentTime>t.end+0.2)v.currentTime=t.start};
@@ -253,9 +256,9 @@ function render(){
     const r2=el('div','row');
     for(const [k,label] of [['vertical','Vertical 9:16'],['captions','Captions']]){const l=el('label'),cb=el('input');cb.type='checkbox';cb.checked=t[k];cb.onchange=()=>{t[k]=cb.checked};l.append(cb,label);r2.append(l)}
     const ex=el('button','primary','Export clip'),exNote=el('div','note bad');exNote.style.display='none';
-    ex.onclick=async()=>{exPending.add(c.id);paintEx(c.id);const ok=await post('/api/export/start',{id:c.id,start:t.start,end:t.end,vertical:t.vertical,captions:t.captions});
+    ex.onclick=async()=>{exPending.add(c.id);paintEx(c.id);const ok=await post('/api/export/start',{id:c.id,start:t.start,end:t.end,vertical:t.vertical,captions:t.captions,hook:t.hook||'',voiceover:!!(t.vo&&c.voiceover)});
       exPending.delete(c.id);await load(false)};          // the server now owns the state: it flips back only when the file is really made
-    r2.append(el('span','grow'),ex);b1.append(el('div','hint','Uses the clip range above. One encode: trim, 9:16 layout and captions together.'),r2,exNote);
+    r2.append(el('span','grow'),ex);b1.append(el('div','hint','Uses the clip range above. One encode: trim, 9:16 layout and captions together.'),r2,exNote,cpExportExtras(c,t));
     if(nx){const e=el('div','row');e.append(el('span','mut','Files:'));for(const x of c.exports){const l=el('a','file',(x.vertical?'9:16 ':'')+(x.captions?'CC ':'')+fmt(x.start)+'-'+fmt(x.end));l.href=fileUrl(c,x.file);l.target='_blank';
       const sf=el('button','sm','📂');sf.title='Show this file in its folder'+(x.copy?' (a copy is also in your final clips folder)':'');sf.onclick=()=>post('/api/reveal',{id:c.id,file:x.file});e.append(l,sf)}b1.append(e)}
     const lb=el('button','sm',layouts[c.channel]?'Edit 9:16 layout for '+c.channel+' ✓':'Set 9:16 layout for '+c.channel+' (webcam + gameplay)');lb.onclick=()=>openLayout(c,v);b1.append(lb);
@@ -557,6 +560,7 @@ function openLayout(c,video){
   resetCap.onclick=()=>{C=null;renderCap()};
   sync();renderCap();loadFrame()}
 /*__AP__*/
+/*__CP__*/
 document.getElementById('s').onchange=()=>{shown=30;render()};
 document.getElementById('upd').onclick=()=>{sig='';lastAct=0;load(true)};
 {const hd=document.querySelector('header.top');let on=false;window.addEventListener('scroll',()=>{const want=on?scrollY>40:scrollY>90;if(want!==on){on=want;hd.classList.toggle('compact',on)}},{passive:true})}
@@ -572,7 +576,7 @@ document.getElementById('purge').onclick=async()=>{if(confirm('Permanently delet
 document.getElementById('folders').onclick=openFolders;document.getElementById('accts').onclick=openAccounts;document.getElementById('quick').onclick=openQuick;Promise.all([loadLayouts(),loadShare()]).then(()=>{load(true);if(!(shareInfo.providers||[]).some(p=>p.automatic&&p.configured)){const sb=document.getElementById('setupBtn');sb.classList.add('dot');sb.title='No account connected for posting yet: open Quick connect or Accounts'}const m=location.hash.match(/connect=([a-z]*)/);if(m)openAccounts(m[1])});(function tick(){setTimeout(async()=>{try{await load(false)}catch(e){}tick()},clips.some(exBusy)?1500:10000)})();
 </script>"""
 
-PAGE = PAGE.replace("/*__AP__*/", autopilot_page.JS)
+PAGE = PAGE.replace("/*__AP__*/", autopilot_page.JS).replace("/*__CP__*/", campaigns_page.JS)
 
 
 def _write_json(path: Path, data: dict):
@@ -634,6 +638,11 @@ class Store:
         out = []
         ap = autopilot.load()
         ready = taste.readiness(taste.model(), ap["min_precision"], ap["min_confidence"])
+        camps = campaigns.load()                      # paid campaigns: each card shows what would block Post
+        rows, pp = (campaigns.posts() if camps else []), None
+        prov = next((share.PROVIDERS[n] for n in ("auto", "direct") if n in share.PROVIDERS and share.PROVIDERS[n].configured()), None)
+        if camps and prov:
+            pp = prov.problems
         for p, m in self._metas():
             m["dir"] = p.parent.relative_to(self.root).as_posix()
             m["res"] = m.get("res") or (self.size_of(p.parent / m["file"]) if m.get("file") else None)
@@ -641,8 +650,29 @@ class Store:
             m["taste"] = self._taste_view(m, ready, ap)
             if not m.get("description"):
                 m["description"] = self._fresh_description(p, m)
+            m["campaign"] = campaigns.card_view(m, pp, camps=camps, rows=rows) if camps else None
             out.append(m)
         return out
+
+    def campaigns_view(self) -> dict:
+        """Everything the Campaigns window shows."""
+        camps, problems = campaigns.load_all()
+        rows = campaigns.posts()
+        return {"text": campaigns.raw_text(), "example": json.dumps(campaigns.EXAMPLE, indent=2), "path": str(campaigns.path()),
+                "campaigns": camps, "problems": problems, "stats": {c["id"]: campaigns.stats(c, rows) for c in camps},
+                "live": {c["id"]: campaigns.live_reason(c, None, rows) for c in camps}, "posts": rows, "to_submit": campaigns.to_submit_groups()}
+
+    def update_campaign_post(self, pid: str, body: dict) -> dict:
+        """Submitted / approved / rejected, the post link and its views. A rejection is saved as a bad example of your style,
+        with the campaign's reason, so the learner and the teacher skill can see what not to do."""
+        before = next((r for r in campaigns.posts() if r["id"] == pid), None)
+        row = campaigns.update_post(pid, status=body.get("status"), reason=body.get("reason"), url=body.get("url"), views=body.get("views"))
+        if row["status"] == "rejected" and (before or {}).get("status") != "rejected":
+            p, m = self.find(row["clip"])
+            if not p:                                         # its record is gone: keep the lesson with what the post log knows
+                m = {"id": row["clip"], "channel": str(row["clip"]).split("/")[0], "description": {"title": row.get("title", "")}}
+            style.record(m, "campaign_reject", "bad", "you", p.parent if p else None, note=f"{row['campaign']}: {row['reason']}")
+        return row
 
     @staticmethod
     def _taste_view(m: dict, ready: dict, ap: dict | None = None) -> dict | None:
@@ -719,7 +749,7 @@ class Store:
                     return False
                 if (self.jobs.get(cid) or {}).get("state") in ("queued", "encoding"):
                     return False                                  # an export is still writing this clip's files
-                names = [m.get("file")] + [e.get("file") for e in m.get("exports") or []]
+                names = [m.get("file")] + [e.get("file") for e in m.get("exports") or []] + [(m.get("voiceover") or {}).get("file")]
                 failed = False
                 for name in names + [(m.get("file") or "").replace(".mp4", ".words.json")]:
                     if name and Path(name).name == name:          # only plain file names next to the .clip.json
@@ -818,7 +848,8 @@ class Store:
             j = self.jobs.get(cid)
             return {"state": j["state"], "message": j["message"], "since": j["since"]} if j else None
 
-    def start_export(self, cid: str, start: float, end: float, vertical: bool, captions: bool) -> dict:
+    def start_export(self, cid: str, start: float, end: float, vertical: bool, captions: bool, hook: str | None = None,
+                     voiceover: bool = False) -> dict:
         """Queue an export and return at once. The clip stays 'queued' / 'encoding' on the SERVER until the file really exists and is
         recorded, so the page shows the right button state after any redraw, reload or second tab. Bad requests fail here, not later."""
         p, m = self.find(cid)
@@ -833,14 +864,16 @@ class Store:
             self.jobs[cid] = job
             if self._export_pool is None:
                 self._export_pool = PriorityPool(max(1, self.cfg.cut_workers), "export")
-            self._export_pool.submit(0, self._run_export, cid, job, start, end, vertical, captions)
+            self._export_pool.submit(0, self._run_export, cid, job, start, end, vertical, captions, hook, voiceover)
         return {"state": "queued"}
 
-    def _run_export(self, cid: str, job: dict, start: float, end: float, vertical: bool, captions: bool) -> None:
+    def _run_export(self, cid: str, job: dict, start: float, end: float, vertical: bool, captions: bool, hook: str | None = None,
+                    voiceover: bool = False) -> None:
         with self.job_lock:
             job["state"] = "encoding"
         try:
-            self.export(cid, start, end, vertical, captions)          # records the export in the clip's file before returning
+            extra = {k: v for k, v in (("hook", hook), ("voiceover", voiceover)) if v}
+            self.export(cid, start, end, vertical, captions, **extra)   # records the export in the clip's file before returning
         except Exception as e:
             msg = str(e) if isinstance(e, (ValueError, CaptionsUnavailable, RuntimeError)) else f"export failed: {e}"
             with self.job_lock:
@@ -856,7 +889,50 @@ class Store:
                 del self.jobs[cid]
         return True
 
-    def export(self, cid: str, start: float, end: float, vertical: bool, captions: bool, by: str = "you") -> str:
+    VO_EXT = ("webm", "ogg", "mp3", "wav", "m4a")
+    VO_MAX = 25 * 1024 * 1024
+
+    def save_voiceover(self, cid: str, data: str, ext: str) -> dict:
+        """Your voice-over for a clip (recorded in the page or picked from a file), saved next to the clip under a name we choose."""
+        ext = str(ext or "").lower().lstrip(".")
+        if ext not in self.VO_EXT:
+            raise ValueError("voice-over must be a " + ", ".join(self.VO_EXT) + " file")
+        try:
+            raw = base64.b64decode(str(data or ""), validate=True)
+        except (binascii.Error, ValueError):
+            raise ValueError("the voice-over did not arrive in one piece: try again") from None
+        if not raw or len(raw) > self.VO_MAX:
+            raise ValueError("the voice-over must be between 1 byte and 25 MB")
+        with self.lock:
+            p, m = self.find(cid)
+            if not p or not m.get("file"):
+                raise ValueError("clip not found")
+            name = f"{Path(m['file']).stem}_vo.{ext}"
+            (p.parent / name).write_bytes(raw)
+            old = (m.get("voiceover") or {}).get("file")
+            if old and old != name and Path(old).name == old:
+                (p.parent / old).unlink(missing_ok=True)
+            m["voiceover"] = {"file": name, "size": len(raw), "at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+            _write_json(p, m)
+            return m["voiceover"]
+
+    def delete_voiceover(self, cid: str) -> bool:
+        with self.lock:
+            p, m = self.find(cid)
+            if not p:
+                return False
+            old = (m.get("voiceover") or {}).get("file")
+            if old and Path(old).name == old:
+                try:
+                    (p.parent / old).unlink(missing_ok=True)
+                except OSError:                               # still in use (an export is reading it): try again later
+                    return False
+            m.pop("voiceover", None)
+            _write_json(p, m)
+        return True
+
+    def export(self, cid: str, start: float, end: float, vertical: bool, captions: bool, by: str = "you",
+               hook: str | None = None, voiceover: bool = False) -> str:
         """Precise trim (+ optional 9:16, + optional burned captions) in ONE encode. Returns the new file name.
         `by` = "you" or "autopilot": only your own exports teach your style."""
         p, m = self.find(cid)
@@ -864,7 +940,16 @@ class Store:
             raise ValueError("clip not found")
         src = p.parent / m["file"]
         self._check_trim(m, start, end)
+        vo = None
+        if voiceover:
+            v = str((m.get("voiceover") or {}).get("file") or "")
+            if not v or Path(v).name != v or not (p.parent / v).is_file():
+                raise ValueError("record or pick a voice-over first")
+            vo = p.parent / v
+        hook = " ".join(str(hook or "").split())[:120] or None
         layout = LayoutStore(self.root).get(m["channel"]) if vertical else None
+        cp = campaigns.plan(m, layout, vertical, self.cfg)          # a paid campaign: keep must_show in, burn the disclosure
+        layout = cp["layout"]
         ass = None
         if captions:
             words = transcribe(src, self.cfg, start, end)          # only the part being exported; may raise CaptionsUnavailable
@@ -875,9 +960,11 @@ class Store:
                                  "Move the trim, or export without captions.")
             ass = build_ass(words, start, end, vertical, self.cfg.caption_font, seam=(layout or {}).get("mode") == "split",
                             box=(layout or {}).get("captions"))
-        name = f"{src.stem}_{int(start * 10)}-{int(end * 10)}{'_v' if vertical else ''}{'_cc' if captions else ''}.mp4"
+        ass = campaigns.burn(cp, ass, vertical, self.cfg, end - start, m, hook=hook)
+        name = (f"{src.stem}_{int(start * 10)}-{int(end * 10)}{'_v' if vertical else ''}{'_cc' if captions else ''}"
+                f"{'_ad' if cp['record'] else ''}{'_hk' if hook else ''}{'_vo' if vo else ''}.mp4")
         errs: list[str] = []
-        placed = export_clip(src, p.parent / name, start, end, self.cfg, vertical, ass, layout, errs)
+        placed = export_clip(src, p.parent / name, start, end, self.cfg, vertical, ass, layout, errs, voiceover=vo)
         if not placed:
             why = errs[0] if errs else "see the console running `review`"
             raise RuntimeError(("" if why.startswith("could not save") else "ffmpeg failed: ") + why)
@@ -888,7 +975,9 @@ class Store:
             m.setdefault("exports", [])
             m["exports"] = [e for e in m["exports"] if e["file"] != name] + [
                 {"file": name, "start": start, "end": end, "vertical": vertical, "captions": captions, "copy": copy,
-                 "layout": (layout or {}).get("mode", self.cfg.vertical_mode) if vertical else None, "by": by}]
+                 "layout": (layout or {}).get("mode", self.cfg.vertical_mode) if vertical else None, "by": by,
+                 **({"campaign": cp["record"]} if cp["record"] else {}),
+                 **({"originality": {"voiceover": bool(vo), "hook": bool(hook)}} if vo or hook else {})}]
             _write_json(p, m)
         if by == "you":
             style.record(m, "export", "none", "you", p.parent)
@@ -921,7 +1010,7 @@ class Store:
         with self.lock:
             for p, m in list(self._metas()):
                 if m.get("status") == "trash":
-                    names = [m.get("file")] + [e["file"] for e in m.get("exports", [])]
+                    names = [m.get("file")] + [e["file"] for e in m.get("exports", [])] + [(m.get("voiceover") or {}).get("file")]
                     for name in names + [m.get("file", "").replace(".mp4", ".words.json")]:
                         if name:
                             (p.parent / name).unlink(missing_ok=True)
@@ -971,6 +1060,10 @@ def make_handler(store: Store):
                 return self._send(200, json.dumps(zernio.summary()).encode())
             if path == "/api/autopilot":
                 return self._send(200, json.dumps(autopilot.status(store)).encode())
+            if path == "/api/campaigns":
+                return self._send(200, json.dumps(store.campaigns_view(), ensure_ascii=False).encode())
+            if path == "/api/campaigns/todo":
+                return self._send(200, json.dumps(campaigns.to_submit_groups(), ensure_ascii=False).encode())
             if path == "/api/accounts":
                 return self._send(200, json.dumps({"platforms": accounts.status(), "redirect_uri": accounts.redirect_uri(store.port),
                                                    "setup": accounts.setup_guide(store.port)}).encode())
@@ -1063,7 +1156,8 @@ def make_handler(store: Store):
             elif path == "/api/export/start":
                 try:
                     return self._send(200, json.dumps(store.start_export(str(body.get("id")), float(body["start"]), float(body["end"]),
-                                                                         bool(body.get("vertical")), bool(body.get("captions")))).encode())
+                                                                         bool(body.get("vertical")), bool(body.get("captions")),
+                                                                         str(body.get("hook") or ""), bool(body.get("voiceover")))).encode())
                 except (ValueError, KeyError) as e:
                     return self._send(400, str(e).encode(), "text/plain")
             elif path == "/api/export/dismiss":
@@ -1184,6 +1278,29 @@ def make_handler(store: Store):
                     return self._send(500, f"could not learn: {e}".encode(), "text/plain")
             elif path == "/api/autopilot/hold":
                 ok = autopilot.Autopilot(store).hold(str(body.get("id")))
+            elif path == "/api/voiceover":
+                try:
+                    return self._send(200, json.dumps(store.save_voiceover(str(body.get("id")), body.get("data"), body.get("ext"))).encode())
+                except (ValueError, OSError) as e:
+                    return self._send(400, str(e).encode(), "text/plain")
+            elif path == "/api/voiceover/delete":
+                ok = store.delete_voiceover(str(body.get("id")))
+            elif path == "/api/campaigns/save":
+                try:
+                    campaigns.save_text(str(body.get("text", "")))
+                    ok = True
+                except (campaigns.CampaignError, OSError) as e:
+                    return self._send(400, str(e).encode(), "text/plain")
+            elif path == "/api/campaigns/post":
+                try:
+                    return self._send(200, json.dumps(store.update_campaign_post(str(body.get("id")), body), ensure_ascii=False).encode())
+                except (campaigns.CampaignError, ValueError, TypeError, OSError) as e:
+                    return self._send(400, str(e).encode(), "text/plain")
+            elif path == "/api/campaigns/views":
+                try:
+                    return self._send(200, json.dumps(campaigns.refresh_views()).encode())
+                except Exception as e:
+                    return self._send(200, json.dumps({"updated": 0, "note": f"Could not refresh the views: {e}"}).encode())
             elif path == "/api/purge":
                 store.purge()
                 ok = True
