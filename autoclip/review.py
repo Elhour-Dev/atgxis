@@ -6,6 +6,7 @@ import mimetypes
 import re
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
@@ -18,6 +19,7 @@ from . import accounts, publish, settings, share        # noqa: F401  (publish r
 from .cutter import export_clip, grab_frame, probe_size
 from .describe import suggest as suggest_description
 from .facecam import FacecamUnavailable, detect_facecam
+from .lanes import PriorityPool
 from .layout import LayoutError, LayoutStore
 
 PAGE = """<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
@@ -69,7 +71,7 @@ details input[type=text],details input[type=password],details textarea{width:100
 <button id=folders>📁 Folders</button><button id=accts>🔗 Accounts</button><button id=purge>Delete trashed files</button><span class=mut id=count></span></header>
 <div class=grid id=g></div>
 <script>
-let clips=[],shown=30,sig='',shareInfo={providers:[],platforms:{}};const openPost=new Map(),openShare=new Map(),NL=String.fromCharCode(10);const trims=new Map();const g=document.getElementById('g');
+let clips=[],shown=30,sig='',shareInfo={providers:[],platforms:{}};const openPost=new Map(),openShare=new Map(),NL=String.fromCharCode(10);const trims=new Map();const exUi=new Map(),exPending=new Set();const g=document.getElementById('g');
 const enc=id=>id.split('/').map(encodeURIComponent).join('/');
 const fmt=t=>Math.floor(t/60)+':'+String(Math.floor(t%60)).padStart(2,'0');
 const fileUrl=(c,f)=>'/files/'+enc(c.dir)+'/'+encodeURIComponent(f);
@@ -78,13 +80,22 @@ async function load(force){
   const next=await (await fetch('/api/clips')).json();
   const ns=JSON.stringify(next.map(c=>[c.id,c.status,(c.exports||[]).length,c.shares||null,c.res?c.res[1]:0]));
   const playing=[...document.querySelectorAll('video')].some(v=>!v.paused);
-  clips=next;if(ns!==sig&&(force||!playing)){sig=ns;render()}}
+  clips=next;if(ns!==sig&&(force||!playing)){sig=ns;render()}
+  for(const id of exUi.keys())paintEx(id)}                // buttons follow the SERVER state, even when a playing video holds back the redraw
+const exBusy=c=>c&&c.export_job&&(c.export_job.state==='queued'||c.export_job.state==='encoding');
+function paintEx(id){
+  const u=exUi.get(id);if(!u)return;const c=clips.find(x=>x.id===id),j=c&&c.export_job;
+  const busy=exPending.has(id)||exBusy(c);
+  u.ex.disabled=busy;u.ex.textContent=busy?((j&&j.state==='encoding')?'Encoding…':'Queued…'):'Export clip';
+  u.note.replaceChildren();u.note.style.display='none';
+  if(!busy&&j&&j.state==='error'){u.note.style.display='';u.note.append('Export failed: '+j.message+' ');
+    const d=el('button',null,'Dismiss');d.onclick=async()=>{await post('/api/export/dismiss',{id});await load(false)};u.note.append(d)}}
 function numInput(v,on){const i=el('input');i.type='number';i.step='0.1';i.min='0';i.value=v;i.oninput=()=>on(parseFloat(i.value));return i}
 function render(){
   const f=document.getElementById('f').value,s=document.getElementById('s').value;
   let list=clips.filter(c=>f==='all'||c.status===f);
   list.sort((a,b)=>s==='score'?b.score-a.score:b.created.localeCompare(a.created));
-  g.replaceChildren();const total=list.length;list=list.slice(0,shown);
+  g.replaceChildren();exUi.clear();const total=list.length;list=list.slice(0,shown);
   document.getElementById('count').textContent=(total>list.length?'showing '+list.length+' of '+total:total)+' clip(s)';
   let moreBtn=null;if(total>list.length){moreBtn=el('button','primary','Show '+Math.min(30,total-list.length)+' more');moreBtn.style.gridColumn='1/-1';moreBtn.onclick=()=>{shown+=30;render()}}
   for(const c of list){
@@ -112,8 +123,11 @@ function render(){
     const r1=el('div','row');r1.append(el('span','mut','Trim'),left,right,a,setA,b,setB,snap,len);upd();
     const r2=el('div','row');
     for(const [k,label] of [['vertical','Vertical 9:16'],['captions','Captions']]){const l=el('label'),cb=el('input');cb.type='checkbox';cb.checked=t[k];cb.onchange=()=>{t[k]=cb.checked};l.append(cb,label);r2.append(l)}
-    const ex=el('button','primary','Export clip');ex.onclick=async()=>{ex.disabled=true;ex.textContent='Encoding…';const ok=await post('/api/export',{id:c.id,start:t.start,end:t.end,vertical:t.vertical,captions:t.captions});ex.disabled=false;ex.textContent='Export clip';if(ok)load(true)};
-    r2.append(ex);tr.append(r1,r2);card.append(tr);
+    const ex=el('button','primary','Export clip'),exNote=el('div','note bad');exNote.style.display='none';
+    ex.onclick=async()=>{exPending.add(c.id);paintEx(c.id);const ok=await post('/api/export/start',{id:c.id,start:t.start,end:t.end,vertical:t.vertical,captions:t.captions});
+      exPending.delete(c.id);await load(false)};          // the server now owns the state: it flips back only when the file is really made
+    exUi.set(c.id,{ex,note:exNote});paintEx(c.id);
+    r2.append(ex);tr.append(r1,r2,exNote);card.append(tr);
     if((c.exports||[]).length){const e=el('div','row');e.append(el('span','mut','Exports:'));for(const x of c.exports){const l=el('a',null,(x.vertical?'9:16 ':'')+(x.captions?'CC ':'')+fmt(x.start)+'-'+fmt(x.end));l.href=fileUrl(c,x.file);l.target='_blank';
       const sf=el('button',null,'📂');sf.title='Show this file in its folder'+(x.copy?' (a copy is also in your final clips folder)':'');sf.onclick=()=>post('/api/reveal',{id:c.id,file:x.file});e.append(l,sf)}card.append(e)}
     let getText=()=>({title:'',body:''});
@@ -363,7 +377,7 @@ function openLayout(c,video){
   sync();renderCap();loadFrame()}
 document.getElementById('f').onchange=()=>{shown=30;render()};document.getElementById('s').onchange=()=>{shown=30;render()};
 document.getElementById('purge').onclick=async()=>{if(confirm('Permanently delete every trashed clip file?')){await post('/api/purge',{});load(true)}};
-document.getElementById('folders').onclick=openFolders;document.getElementById('accts').onclick=openAccounts;Promise.all([loadLayouts(),loadShare()]).then(()=>{load(true);const m=location.hash.match(/connect=([a-z]*)/);if(m)openAccounts(m[1])});setInterval(()=>load(false),10000);
+document.getElementById('folders').onclick=openFolders;document.getElementById('accts').onclick=openAccounts;Promise.all([loadLayouts(),loadShare()]).then(()=>{load(true);const m=location.hash.match(/connect=([a-z]*)/);if(m)openAccounts(m[1])});(function tick(){setTimeout(async()=>{try{await load(false)}catch(e){}tick()},clips.some(exBusy)?1500:10000)})();
 </script>"""
 
 
@@ -377,6 +391,9 @@ class Store:
     def __init__(self, root: Path, cfg: Config):
         self.root, self.cfg, self.lock = root.resolve(), cfg, threading.Lock()
         self.port = 8765                              # set by serve(); the sign-in pages come back to this port
+        self.jobs: dict[str, dict] = {}               # clip id -> running / failed export (the page paints its button from this)
+        self.job_lock = threading.Lock()
+        self._export_pool: PriorityPool | None = None
 
     def _metas(self):
         for p in self.root.rglob("*.clip.json"):
@@ -424,6 +441,7 @@ class Store:
         for p, m in self._metas():
             m["dir"] = p.parent.relative_to(self.root).as_posix()
             m["res"] = m.get("res") or (self.size_of(p.parent / m["file"]) if m.get("file") else None)
+            m["export_job"] = self.job_view(m.get("id"))
             if not m.get("description"):
                 m["description"] = self._fresh_description(p, m)
             out.append(m)
@@ -537,14 +555,61 @@ class Store:
             raise ValueError("no face found consistently in this clip. Draw the webcam box by hand.")
         return rect
 
+    @staticmethod
+    def _check_trim(m: dict, start: float, end: float) -> None:
+        if not (0 <= start < end <= m["duration_s"] + 1) or end - start > 600:
+            raise ValueError(f"bad trim {start}-{end} (draft is {m['duration_s']}s)")
+
+    def job_view(self, cid: str | None) -> dict | None:
+        with self.job_lock:
+            j = self.jobs.get(cid)
+            return {"state": j["state"], "message": j["message"], "since": j["since"]} if j else None
+
+    def start_export(self, cid: str, start: float, end: float, vertical: bool, captions: bool) -> dict:
+        """Queue an export and return at once. The clip stays 'queued' / 'encoding' on the SERVER until the file really exists and is
+        recorded, so the page shows the right button state after any redraw, reload or second tab. Bad requests fail here, not later."""
+        p, m = self.find(cid)
+        if not p:
+            raise ValueError("clip not found")
+        self._check_trim(m, start, end)
+        with self.job_lock:
+            cur = self.jobs.get(cid)
+            if cur and cur["state"] in ("queued", "encoding"):
+                raise ValueError("this clip is already being exported: wait for it to finish")
+            job = {"state": "queued", "message": "", "since": time.time()}
+            self.jobs[cid] = job
+            if self._export_pool is None:
+                self._export_pool = PriorityPool(max(1, self.cfg.cut_workers), "export")
+            self._export_pool.submit(0, self._run_export, cid, job, start, end, vertical, captions)
+        return {"state": "queued"}
+
+    def _run_export(self, cid: str, job: dict, start: float, end: float, vertical: bool, captions: bool) -> None:
+        with self.job_lock:
+            job["state"] = "encoding"
+        try:
+            self.export(cid, start, end, vertical, captions)          # records the export in the clip's file before returning
+        except Exception as e:
+            msg = str(e) if isinstance(e, (ValueError, CaptionsUnavailable, RuntimeError)) else f"export failed: {e}"
+            with self.job_lock:
+                job.update(state="error", message=msg)                # stays visible until dismissed or the next try
+            return
+        with self.job_lock:
+            if self.jobs.get(cid) is job:
+                del self.jobs[cid]                                    # only now does the button go back to normal
+
+    def dismiss_export(self, cid: str) -> bool:
+        with self.job_lock:
+            if (self.jobs.get(cid) or {}).get("state") == "error":
+                del self.jobs[cid]
+        return True
+
     def export(self, cid: str, start: float, end: float, vertical: bool, captions: bool) -> str:
         """Precise trim (+ optional 9:16, + optional burned captions) in ONE encode. Returns the new file name."""
         p, m = self.find(cid)
         if not p:
             raise ValueError("clip not found")
         src = p.parent / m["file"]
-        if not (0 <= start < end <= m["duration_s"] + 1) or end - start > 600:
-            raise ValueError(f"bad trim {start}-{end} (draft is {m['duration_s']}s)")
+        self._check_trim(m, start, end)
         layout = LayoutStore(self.root).get(m["channel"]) if vertical else None
         ass = None
         if captions:
@@ -734,6 +799,14 @@ def make_handler(store: Store):
                     return self._send(400, str(e).encode(), "text/plain")
                 except Exception as e:
                     return self._send(500, f"export failed: {e}".encode(), "text/plain")
+            elif path == "/api/export/start":
+                try:
+                    return self._send(200, json.dumps(store.start_export(str(body.get("id")), float(body["start"]), float(body["end"]),
+                                                                         bool(body.get("vertical")), bool(body.get("captions")))).encode())
+                except (ValueError, KeyError) as e:
+                    return self._send(400, str(e).encode(), "text/plain")
+            elif path == "/api/export/dismiss":
+                ok = store.dismiss_export(str(body.get("id")))
             elif path == "/api/layout":
                 try:
                     if not re.fullmatch(r"[\w.-]{1,60}", str(body.get("channel", ""))):

@@ -16,6 +16,7 @@ reaction_lag_s = 8      # chat reacts ~8 s after the moment; raise it if the 30 
 
 # --- captions ---
 # whisper_model = "small"   # tiny / base / small / medium
+# whisper_language = "en"   # force the spoken language (recommended if you know it); empty = detect once per clip
 
 # --- quality / speed ---
 quality = "best"                    # record the stream at its top quality (sharper clips). "720p60,720p,best" saves disk but looks soft
