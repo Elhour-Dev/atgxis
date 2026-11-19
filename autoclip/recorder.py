@@ -6,6 +6,7 @@ time, so the two always line up, even after ads/gaps/reconnects (relative video 
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 import subprocess
 import tempfile
@@ -48,7 +49,7 @@ def ffprobe_exe() -> str:
 
 def streamlink_cmd(url: str, quality: str) -> list[str]:
     exe = shutil.which("streamlink") or "streamlink"
-    return [exe, "--stdout", "--loglevel", "warning", "--retry-streams", "5", "--retry-max", "3", url, quality]
+    return [exe, "--stdout", "--loglevel", "info", "--retry-streams", "5", "--retry-max", "3", url, quality]
 
 
 def segmenter_cmd(cfg: Config) -> list[str]:
@@ -57,6 +58,41 @@ def segmenter_cmd(cfg: Config) -> list[str]:
             "-segment_time", str(cfg.segment_s), "-segment_format", "mpegts", "-reset_timestamps", "1",
             "-segment_list", "list.csv", "-segment_list_type", "csv", "-segment_list_flags", "+live",
             "seg_%06d.ts"]
+
+
+_AD_WORDS = re.compile(r"advert|pre-?roll|mid-?roll|commercial", re.I)
+START_WAIT_S = 90            # a capture that has produced nothing at all this long is abandoned (unless an ad break is announced)
+
+
+def streamlink_tail(log_path: Path, nbytes: int = 4000) -> str:
+    """The end of streamlink's own log (what it was saying when video stopped)."""
+    try:
+        with open(log_path, "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - nbytes))
+            return f.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
+
+
+def ad_break_announced(log_path: Path) -> bool:
+    """Streamlink pauses its output while a Twitch ad break runs (and says so in its log). Silence then is not a dead stream."""
+    return bool(_AD_WORDS.search(streamlink_tail(log_path)))
+
+
+def last_words(log_path: Path, limit: int = 220) -> str:
+    lines = [ln.strip() for ln in streamlink_tail(log_path).splitlines() if ln.strip()]
+    return lines[-1][:limit] if lines else ""
+
+
+def should_restart(idle: float, produced: bool, ad_break: bool, cfg: Config) -> bool:
+    """Give up on this capture and start a new one? A stall normally means a dead connection (restart after cfg.stall_s), but during
+    an ad break streamlink is paused on purpose: restarting would only start a new session, with a new pre-roll ad, over and over.
+    So with an ad break announced we wait up to cfg.ad_stall_s."""
+    limit = cfg.stall_s if produced else START_WAIT_S
+    if idle <= limit:
+        return False
+    return not (ad_break and idle <= cfg.ad_stall_s)
 
 
 class Recorder(threading.Thread):
@@ -70,6 +106,7 @@ class Recorder(threading.Thread):
         self._lock = threading.Lock()
         self.live = threading.Event()
         self.on_segments = None          # optional callback(list[Segment]) for every batch of new segments
+        self.paused_for_ad = False       # streamlink announced an ad break and we are waiting it out
         self.defer_cleanup = False       # True: the owner (ChannelWorker) deletes the buffer via cleanup() once its last cut is done
 
     # ---- queries -----------------------------------------------------------------------------
@@ -120,7 +157,8 @@ class Recorder(threading.Thread):
             sp = subprocess.Popen(src, stdout=subprocess.PIPE, stderr=slog)
             fp = subprocess.Popen(segmenter_cmd(self.cfg), stdin=sp.stdout, stdout=subprocess.DEVNULL, stderr=flog, cwd=run_dir)
             sp.stdout.close()
-            offset, produced, last_new, last_clean = 0, 0, time.time(), 0.0
+            offset, produced, last_new, last_clean, ad_noted = 0, 0, time.time(), 0.0, False
+            slog_path = run_dir / "source.log"
             try:
                 while not self.stop_evt.is_set() and fp.poll() is None:
                     time.sleep(0.5)
@@ -141,11 +179,23 @@ class Recorder(threading.Thread):
                         produced += len(rows)
                         last_new = now
                         self.live.set()
-                    elif produced and time.time() - last_new > 45:
-                        log.warning("no new video for 45s; restarting capture")
-                        break
-                    elif not produced and time.time() - last_new > 90:
-                        break
+                        self.paused_for_ad, ad_noted = False, False
+                    else:
+                        idle = time.time() - last_new
+                        if idle > 15:
+                            self.live.clear()                      # the status must not say "live" while no video arrives
+                        if idle > (self.cfg.stall_s if produced else START_WAIT_S):
+                            ad = ad_break_announced(slog_path)
+                            self.paused_for_ad = ad
+                            if should_restart(idle, bool(produced), ad, self.cfg):
+                                if produced:
+                                    say = last_words(slog_path)
+                                    log.warning("no new video for %ds; restarting capture%s", idle, f" (streamlink said: {say})" if say else "")
+                                break
+                            if not ad_noted:
+                                ad_noted = True
+                                log.info("streamlink is paused for a Twitch ad break: waiting for it to end (up to %ds) instead of restarting",
+                                         self.cfg.ad_stall_s)
                     if time.time() - last_clean >= 2.0:                  # pruning twice a second was wasted work
                         last_clean = time.time()
                         self._janitor()
@@ -153,6 +203,8 @@ class Recorder(threading.Thread):
                 kill(sp)
                 kill(fp)
         if not produced:                              # offline check that recorded nothing: no folder + logs left behind per check
+            say = last_words(slog_path)                # but keep the reason: "video: waiting" is useless without it
+            log.info("capture ended without any video%s", f" (streamlink said: {say})" if say else " (streamlink said nothing)")
             shutil.rmtree(run_dir, ignore_errors=True)
         return produced
 

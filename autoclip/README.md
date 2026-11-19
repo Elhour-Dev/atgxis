@@ -80,6 +80,12 @@ Rule of thumb: the limits are your download speed and disk, not the program. Add
   Twitch's ports 6697 and 443, and it pings a quiet connection so a dead one is noticed within about 90 s. While chat is down the status
   block says `CHAT RECONNECTING`: the video keeps recording, but spikes cannot be detected, and the channel's "normal" level is not
   learned from that silence. When chat returns the log says `back after N s`. Occasional drops on Wi-Fi are normal; if they are constant, check the connection.
+* **`video: waiting` in the status block** means no video is being recorded for that channel. The log line `capture ended without any video
+  (streamlink said: ...)` gives the reason. To test one channel directly on your PC, run `python -m autoclip check kaicenat`: it asks
+  streamlink for 20 s of video, shows what streamlink says and explains it (channel offline, ad break, network/DNS problem, access refused).
+  `python -m autoclip doctor` shows your streamlink version; Twitch changes often, so keep it current (`winget upgrade Streamlink.Streamlink`).
+  While Twitch shows an **ad break**, streamlink pauses on purpose; the recorder now waits for it (up to `ad_stall_s` = 240 s) instead of
+  restarting the capture, which would only start a new session with a new pre-roll ad.
 * **An offline streamer** costs almost nothing: it is checked about once a minute and leaves no files behind. If chat spikes while there is no
   video, that is logged as "no video" (not a failed cut).
 * Measured on a synthetic run (2 streams, repeated spikes, 9:16 renders on): memory stayed flat (about 22 MB), threads and open files stayed

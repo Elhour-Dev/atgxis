@@ -27,6 +27,10 @@ vertical = "on_demand"              # "auto" also exports a 9:16 of every sugges
 # draft_workers = 4          # draft cuts at the same time (cheap stream copies; they never wait for renders)
 # status_every_s = 60        # overview of all streams every N seconds (0 = off)
 
+# --- recording stalls ---
+# stall_s = 45               # no new video for this long = dead connection: restart the capture
+# ad_stall_s = 240           # but while streamlink reports a Twitch ad break, wait up to this long instead of restarting
+
 # --- housekeeping ---
 out_dir = "clips"
 max_clips_gb = 20
