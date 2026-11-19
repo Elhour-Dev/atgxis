@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import random
 import re
+import unicodedata
 import zlib
 from collections import Counter
 
@@ -171,11 +172,15 @@ def candidates(f: dict) -> list[tuple[str, str]]:
     return out
 
 
-def pick(f: dict, rng: random.Random, seen: set[str], k: int = 6) -> list[str]:
-    """k varied titles: at most two per family, clip-specific families first, never one already shown."""
-    cands = [c for c in candidates(f) if c[1] not in seen]
+def pick(f: dict, rng: random.Random, seen: set[str], k: int = 6, extra: list | None = None, order: list | None = None) -> list[str]:
+    """k varied titles: at most two per family, clip-specific families first, never one already shown.
+    `extra` = more (family, title) candidates (your taught templates); `order` = your preferred family order (style rules)."""
+    cands = [c for c in (extra or []) + candidates(f) if c[1] not in seen]
     rng.shuffle(cands)
     prio = {"speech": 0, "chat": 1, f["cat"]: 2, "loud": 3, "big": 4, "hook": 5}
+    if order:
+        fam = {"category": f["cat"]}
+        prio = {fam.get(x, x): i for i, x in enumerate(order)}
     cands.sort(key=lambda c: prio.get(c[0], 9) + rng.random() * 1.6)      # specific first, but never the same order twice
     out, per = [], Counter()
     for fam, title in cands:
@@ -192,31 +197,120 @@ def pick(f: dict, rng: random.Random, seen: set[str], k: int = 6) -> list[str]:
     return out
 
 
-def hashtags(f: dict, meta: dict, cfg: Config) -> list[str]:
+def hashtags(f: dict, meta: dict, cfg: Config, body: dict | None = None) -> list[str]:
     chan = re.sub(r"\W", "", str(meta.get("channel", "")).lower())
     emote = re.sub(r"\W", "", (f["say"] or "").lower()) if f["say"] and len(f["say"].split()) == 1 else ""
-    tags = [chan, *CATEGORY_TAGS[f["cat"]], *([emote] if emote and len(emote) <= 14 else []), *cfg.hashtags]
-    return list(dict.fromkeys(t.lstrip("#") for t in tags if t))[:9]
+    if body is None:
+        tags = [chan, *CATEGORY_TAGS[f["cat"]], *([emote] if emote and len(emote) <= 14 else []), *cfg.hashtags]
+        return list(dict.fromkeys(t.lstrip("#") for t in tags if t))[:9]
+    tags = [*body.get("hashtags_fixed", []), *([chan] if body.get("channel_tag", True) else []), *CATEGORY_TAGS[f["cat"]],
+            *([emote] if emote and len(emote) <= 14 else []), *cfg.hashtags]
+    return list(dict.fromkeys(t.lstrip("#") for t in tags if t))[:max(0, int(body.get("hashtags_max", 9)))]
 
 
-def body_for(f: dict, meta: dict, cfg: Config, rng: random.Random) -> str:
+def body_for(f: dict, meta: dict, cfg: Config, rng: random.Random, body: dict | None = None) -> str:
     lines = []
-    lead = f'"{f["quote"]}"' if f["quote"] else rng.choice(HOOK_BODY)
+    hooks = [h for h in (body or {}).get("hooks") or [] if not _BAD.search(h)] or HOOK_BODY
+    lead = f'"{f["quote"]}"' if f["quote"] else rng.choice(hooks)
     lines.append(lead)
-    if cfg.credit_line and meta.get("source_url"):
+    credit = cfg.credit_line if (body or {}).get("credit_line") is None else body["credit_line"]
+    if credit and meta.get("source_url"):
         lines.append(f"🎥 Clip from {f['n']}: {meta['source_url']}")
-    lines.append(" ".join("#" + t for t in hashtags(f, meta, cfg)))
+    tags = hashtags(f, meta, cfg, body)
+    at = mention(meta, cfg)                              # the streamer is always tagged, next to the hashtags
+    if tags or at:
+        lines.append(" ".join(([at] if at else []) + ["#" + t for t in tags]))
     return "\n\n".join(lines)
 
 
+def with_mention(body: str, meta: dict, cfg: Config) -> str:
+    """The description with the @streamer tag: added in front of the hashtag line (or at the end) when it is not there yet."""
+    at = mention(meta, cfg)
+    if not at or re.search(r"(?<![\w@])" + re.escape(at) + r"(?!\w)(?!\.\w)", body, re.I):
+        return body
+    lines = body.rstrip().split("\n")
+    if lines and lines[-1].lstrip().startswith("#"):
+        lines[-1] = at + " " + lines[-1].lstrip()
+        return "\n".join(lines)
+    return (body.rstrip() + "\n\n" + at) if body.strip() else at
+
+
+def _handle(v) -> str:
+    h = str(v or "").strip().lstrip("@")
+    return h if re.fullmatch(r"[\w.]{1,30}", h, re.ASCII) else ""   # never change a name to fit: that could tag somebody else
+
+
+def mention(meta: dict, cfg: Config) -> str:
+    """@streamer: their handle from `handles` in the config (it may differ on TikTok / Instagram), else the Twitch name, else the
+    @handle in a YouTube link. No tag when the handle is not known (a YouTube video link): a wrong @ would tag a stranger."""
+    chan = str(meta.get("channel") or "")
+    raw = getattr(cfg, "handles", None)
+    handles = {str(k).lower(): v for k, v in raw.items()} if isinstance(raw, dict) else {}
+    h = _handle(handles.get(chan.lower()))
+    if h:
+        return "@" + h
+    if meta.get("platform") == "youtube" or chan.startswith("yt_"):
+        m = re.search(r"youtube\.com/@([\w.-]+)", str(meta.get("source_url") or ""))
+        return "@" + _handle(m.group(1)) if m and _handle(m.group(1)) else ""
+    h = _handle(chan)
+    return "@" + h if h else ""
+
+
+def _fill(tpl: str, f: dict) -> str | None:
+    """A taught template with {streamer} {phrase} {quote} {count}; None when the clip lacks something it needs. Plain replacement, no format()."""
+    vals = {"streamer": f["n"], "phrase": f["say"], "quote": f["quote"], "count": str(f["count"]) if f["count"] else None}
+    out = tpl
+    for k, v in vals.items():
+        if "{" + k + "}" in out:
+            if not v:
+                return None
+            out = out.replace("{" + k + "}", v)
+    out = out.strip()
+    return out if out and len(out) <= 95 and not _BAD.search(out) and "{" not in out else None
+
+
+def _ends_emoji(t: str) -> bool:
+    t = t.rstrip()
+    return bool(t) and (unicodedata.category(t[-1]) == "So" or t[-1] == "\ufe0f")
+
+
+def _recase(t: str, case: str | None) -> str:
+    if case == "upper":
+        return t.upper()
+    if case == "lower":
+        return t.lower()
+    if case == "title":
+        return re.sub(r"(?<![\w'])([^\W\d_])", lambda m_: m_.group(1).upper(), t)
+    if case == "sentence":
+        return re.sub(r"[^\W\d_]", lambda m_: m_.group(0).upper(), t, count=1)
+    return t
+
+
+def styled_titles(titles: list[str], tr: dict) -> list[str]:
+    """Your title rules: drop titles that break your word limit / emoji habit (unless that leaves none), then apply your case."""
+    keep = titles
+    if tr.get("max_words"):
+        keep = [t for t in keep if len(t.split()) <= tr["max_words"]] or keep
+    if tr.get("emoji_end") is not None:
+        keep = [t for t in keep if _ends_emoji(t) == tr["emoji_end"]] or keep
+    return list(dict.fromkeys(_recase(t, tr.get("case")) for t in keep))
+
+
 def suggest(meta: dict, cfg: Config, words: list | None = None, window: tuple[float, float] | None = None,
-            seed: int = 0, seen: list[str] | None = None) -> dict:
+            seed: int = 0, seen: list[str] | None = None, rules: dict | None = None) -> dict:
     """{'title', 'alts' (6 fresh titles), 'body', 'category', 'seen' (every title shown so far), 'used_speech': bool}.
-    Different `seed` (and the `seen` list) give different titles; the same clip + seed always gives the same ones."""
+    Different `seed` (and the `seen` list) give different titles; the same clip + seed always gives the same ones.
+    `rules` = your style (style.load): your templates, family order, case, word limit, emoji habit, hooks and hashtags."""
     f = features(meta, cfg, words, window)
     rng = random.Random(zlib.crc32(f"{meta.get('id', '')}:{seed}".encode()))
     seen_set = set(seen or [])
-    alts = pick(f, rng, seen_set) or pick(f, rng, set())      # everything used up: start over rather than return nothing
-    shown = list(dict.fromkeys([*(seen or []), *alts]))[-60:]
-    return {"title": alts[0], "alts": alts, "body": body_for(f, meta, cfg, rng), "category": f["cat"], "seed": seed,
+    tr = (rules or {}).get("title") or {}
+    extra = [("taught", t) for t in (_fill(x, f) for x in tr.get("templates") or []) if t]
+    order = tr.get("source_order") if rules else None
+    alts = pick(f, rng, seen_set, extra=extra, order=order) or pick(f, rng, set(), extra=extra, order=order)
+    shown = list(dict.fromkeys([*(seen or []), *alts]))[-60:]     # the raw titles: that is what pick() filters on
+    if rules:
+        alts = styled_titles(alts, tr)
+    body_rules = rules.get("body") if rules else None
+    return {"title": alts[0], "alts": alts, "body": body_for(f, meta, cfg, rng, body_rules), "category": f["cat"], "seed": seed,
             "seen": shown, "used_speech": bool(f["quote"]), "chat_phrase": f["say"]}

@@ -170,7 +170,7 @@ def test_assistant_opens_fixed_pages_only_and_never_posts_without_a_request(tmp_
                                               {"tiktok": {"title": "T", "body": "b"}, "instagram": {"title": "T", "body": "b"}}))
     assert rec.opened == [share.PLATFORMS["tiktok"]["url"], share.PLATFORMS["instagram"]["url"]]     # fixed, trusted URLs only
     assert [p.name for p in rec.revealed] == ["c_v.mp4", "c_v.mp4"]
-    assert res["tiktok"]["status"] == "opened" and res["tiktok"]["text"] == "T\n\nb"
+    assert res["tiktok"]["status"] == "opened" and res["tiktok"]["text"] == "T\n\nb\n\n@ch"         # the streamer is always tagged
     m = meta_of(root)["shares"]
     assert m["tiktok"]["status"] == "opened" and m["instagram"]["status"] == "opened" and "youtube" not in m
 

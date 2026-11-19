@@ -312,7 +312,8 @@ class ChannelWorker(threading.Thread):
                     "duration_s": round(dur, 1), "moment_s": round(moment, 1), "clip_len_s": c.clip_len_s,
                     "suggest_start_s": sug[0], "suggest_end_s": sug[1], "exports": [],
                     "spike": {k: v for k, v in asdict(sp).items() if k != "score"}}
-            meta["description"] = suggest_description(meta, c)
+            d = suggest_description(meta, c)
+            meta["description"] = {**d, "auto_body": d["body"], "title_src": "auto", "body_edited": False}   # the app's text, not yours
             _write_meta(out.with_suffix(".clip.json"), meta)
             with self._lock:
                 self.clips_made += 1
@@ -356,7 +357,7 @@ class ChannelWorker(threading.Thread):
                 return
             fin = placed if isinstance(placed, Path) else fin                    # may carry a _2 suffix if the name was locked
             rec = {"file": fin.name, "start": sug[0], "end": sug[1], "vertical": True, "captions": False,
-                   "layout": (layout or {}).get("mode", c.vertical_mode), "copy": self._copy_final(fin)}
+                   "layout": (layout or {}).get("mode", c.vertical_mode), "copy": self._copy_final(fin), "by": "recorder"}
             meta = _read_meta(meta_path) or meta                                 # re-read: you may have pressed Keep/Trash meanwhile
             meta.setdefault("exports", []).append(rec)
             _write_meta(meta_path, meta)

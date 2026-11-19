@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from . import settings, taste
+from . import settings, style, taste
 
 PLATFORMS: dict[str, dict] = {
     "tiktok": {"label": "TikTok", "url": "https://www.tiktok.com/tiktokstudio/upload", "text_max": 2200},
@@ -142,7 +142,8 @@ def run(store, req: ShareRequest) -> dict[str, dict]:
     jobs, problems = [], []
     for pl in plats:
         t = req.texts.get(pl) or {}
-        title, text = compose(pl, str(t.get("title", "")), str(t.get("body", "")))
+        from .describe import with_mention
+        title, text = compose(pl, str(t.get("title", "")), with_mention(str(t.get("body") or ""), meta, getattr(store, "cfg", None)))   # always @streamer
         errs = check(pl, title, text, meta.get("duration_s"), bool(ex.get("vertical")))
         if errs:
             problems.append(f"{PLATFORMS[pl]['label']}: " + "; ".join(errs))
@@ -167,6 +168,19 @@ def run(store, req: ShareRequest) -> dict[str, dict]:
         if req.actor == "you" and r.status in ("done", "draft") and not learned:
             learned = True                                     # once per share, however many platforms
             taste.record(meta, 1, "posted")                    # you chose to post it: a Keep (never overrides an explicit Trash)
+    if any(r["status"] in ("done", "draft") for r in results.values()):
+        p2, m2 = store.find(req.clip_id)                       # with the new shares recorded
+        if p2:
+            if req.actor == "you":
+                d = dict(m2.get("description") or {})
+                t = next((req.texts.get(pl) or {} for pl in req.platforms if (req.texts.get(pl) or {}).get("title")), {})
+                if t.get("title") and t["title"] != d.get("title"):
+                    d.update(title=t["title"], title_src="typed")
+                if t.get("body") is not None and t.get("body") != d.get("body") and t.get("body"):
+                    d.update(body=t["body"], body_edited=True)
+                style.record({**m2, "description": d}, "post", "good", "you", p2.parent)
+            else:
+                style.record(m2, "post", "none", "autopilot", p2.parent)       # its own output: never learned as yours
     return results
 
 
@@ -200,4 +214,5 @@ def mark(store, clip_id: str, platform: str, status: str) -> bool:
         _write_json(p, m)
     if status == "done":
         taste.record(m, 1, "posted")                           # you posted it yourself: counts as a Keep
+    style.record(m, "mark" if status == "done" else "mark_reset", "good" if status == "done" else "none", "you", p.parent)
     return True

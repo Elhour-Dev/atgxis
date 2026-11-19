@@ -154,7 +154,11 @@ class Recorder(threading.Thread):
         still waiting when Ctrl+C was pressed (they need the video; deleting it at stop time lost them)."""
         with self._lock:
             self._segs.clear()
-        shutil.rmtree(self.root, ignore_errors=True)
+        for _ in range(20):                           # Windows: a just-stopped ffmpeg can hold a segment file for a moment
+            shutil.rmtree(self.root, ignore_errors=True)
+            if not Path(self.root).exists():
+                break
+            time.sleep(0.25)
 
     def _run_once(self) -> int:
         run_dir = self.root / f"run_{int(time.time())}"

@@ -45,6 +45,21 @@ def write_clip(root: Path, m: dict, export: bool = True) -> Path:
     return p
 
 
+def ffmpeg_leaked(pattern: str) -> bool:
+    """Is an ffmpeg with `pattern` in its command line still running? pgrep where there is one, PowerShell on Windows."""
+    import shutil
+    import subprocess as sp
+    if shutil.which("pgrep"):
+        return sp.run(["pgrep", "-f", pattern], capture_output=True).returncode == 0
+    ps = ["powershell", "-NoProfile", "-Command",
+          "Get-CimInstance Win32_Process -Filter \"Name='ffmpeg.exe'\" | Where-Object { $_.CommandLine -like '*" + pattern + "*' } | "
+          "Measure-Object | Select-Object -ExpandProperty Count"]
+    r = sp.run(ps, capture_output=True, text=True)
+    if r.returncode != 0 or not r.stdout.strip().isdigit():
+        raise RuntimeError(f"could not list processes: {r.stderr.strip() or r.stdout.strip()}")
+    return r.stdout.strip() != "0"
+
+
 def teach(taste, n_each: int = 60, seed: int = 1) -> dict:
     """Record the decisions of a user who keeps every `fav` clip and trashes every `meh` one, then learn from them."""
     rnd = random.Random(seed)

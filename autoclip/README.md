@@ -38,9 +38,22 @@ python -m autoclip review                                   # later: opens the r
   already running are finished, and renders still waiting in line are skipped (their draft exists; press **Export** in the review page).
 * Clips land in `clips\<channel>\<date_time>\` as **drafts**: ~40 s of context around the moment, made by stream copy in
   under a second (no CPU use, no quality loss). Nothing is encoded until you ask.
-* In the review page (ranked best-first) each draft opens already trimmed to a **suggested 30 s window**. Fine-tune with the
-  *start = player* / *end = player* buttons (the player loops your trim), tick **Vertical 9:16** and/or **Captions**, and press
-  **Export clip**: ONE encode does the exact trim + layout + captions. Then **Keep / Trash**; "Delete trashed files" frees disk.
+* The review page has tabs at the top: **To review · Kept · Trash · Done · All**, each with its count, plus the order (best score
+  first by default). **📐 Layout** sets where the webcam and the game go in 9:16 clips (per streamer). Folders and posting accounts
+  are under **⚙ Setup** (a dot on it means no posting account is connected yet). The top bar shrinks when you scroll down.
+* The page never redraws under your hands. While you are working (typing, playing a video, or you clicked or scrolled in the last
+  30 s) new clips and changes wait behind a green **"3 new clips · Show"** button; when you leave the page alone they appear by
+  themselves. Your own actions (Keep, Trash, a finished export) show at once.
+* Each clip card reads top to bottom: score, title, streamer and age; the video; a **trim bar** under it; what chat was saying; then
+  **Keep / Trash** (always in the same place); then three steps: **① Export → ② Post text → ③ Share**. A step turns green with ✓ when
+  it is done, and Share stays locked until the clip is exported.
+* Each draft opens already trimmed to a **suggested 30 s window**. Drag the two handles on the trim bar (the yellow line is the moment
+  chat exploded; click the bar to jump the player there), or use **Start here / End here** at the player position; **Fine-tune**
+  has exact seconds, *◀ 5 s / 5 s ▶* and *30 s*. The player loops your trim. In **① Export** tick **Vertical 9:16** and/or
+  **Captions** and press **Export clip**: ONE encode does the exact trim + layout + captions. Then **Keep / Trash**;
+  "Delete trashed files" (on the Trash tab) frees disk.
+* **Keyboard:** click a card (or use **← →**, or **J / L**) to pick it, then **K** keep, **T** trash, **U** undo, **Space** play/pause.
+  After Keep or Trash the next clip is picked for you, so you can review a whole list without the mouse.
   Posted a clip already? Press **Done (free space)** instead of Trash: it deletes that clip's draft, exports and caption data (not the
   copy in your final clips folder), keeps it listed under "Done", and counts it as a Keep.
   Keep / Trash also teach the [🤖 Autopilot](#-autopilot-it-learns-what-you-keep-and-posts-the-good-ones-for-you), which can learn your taste and post the good clips for you.
@@ -132,10 +145,10 @@ Loudness bonus: a clip scores up to +10 if the audio is louder after the moment 
 * **Near-misses are logged** (`near-miss: chat 1.7x normal (needed 1.9x)`): if you see many for moments you wanted, lower `mult`.
   A session summary at the end counts spikes, near-misses, clips, skipped duplicates and failed cuts.
 * Everything is also written to `autoclip.log` in the clips folder: send that file when something looks wrong.
-* Window position: the 30 s window starts 15 s before chat took off. Use **◀ 5 s / 5 s ▶** in the review page to slide it.
+* Window position: the 30 s window starts 15 s before chat took off. Drag it on the trim bar, or use **◀ 5 s / 5 s ▶** under *Fine-tune*, to slide it.
 
 ## Folders
-**📁 Folders** in the review page: pick where **finished clips** are copied (any folder, with a Browse dialog) and where drafts live.
+**⚙ Setup → 📁 Folders** in the review page: pick where **finished clips** are copied (any folder, with a Browse dialog) and where drafts live.
 Saved in your user settings (`%APPDATA%\autoclip\settings.json`), so `git pull` never overwrites them. **📂** next to an export shows it in
 Explorer.
 
@@ -228,11 +241,41 @@ and two agreeing checks. Lowering "required accuracy" in the window unlocks it s
 * Never twice: a platform that already has the clip (posted by you or earlier) is skipped. If the program dies *while* sending, that clip is
   **not** retried by itself, because it may have gone out. A failed post is retried once after 15 min, then given up on.
 * **Circuit breaker:** if you trash 30% or more of its last posts that you judged (at least 5), it switches itself to *Suggest only* and says why.
+* **Score rules** (in the Autopilot window, default 70 / 40): it posts only clips scoring **70 or more**; clips scoring **40-69** are
+  left for you to check; clips scoring **under 40** from the streamers you ticked are moved to **Trash** while posting is on (after the
+  same waiting time as a post, and only clips from the last 24 h, so switching it on does not sweep your whole backlog). Trash, not
+  deleted: **Undo** brings a clip back (and it stays back), and its files go when you press "Delete trashed files". A clip you already
+  worked on (exported, posted, or edited its text) is never trashed. These trashes are the Autopilot's, so they never count as your
+  taste or style. Keep judging some 40-69 clips yourself: that is what teaches it which ones are worth posting.
 * Everything it does is recorded in `autopilot_log.jsonl` next to your settings, and on each clip's card.
 
 **Limits.** It posts through the same code as the Share button: that code has been tested against simulated platform servers, not your live
 accounts, and the autopilot itself is tested with a stand-in provider. Check the first posts yourself. Posting other people's streams without
 their permission can get you struck or banned whatever the program thinks of the clip.
+
+### It posts in your style
+
+Taste decides *which* clips go out; style decides *how*: the trim, captions, title, description and platforms, the way **you** do them.
+
+* **Examples.** Every Keep, Trash, Done, Undo, title or description edit, export and post of yours adds one line to
+  `<settings folder>\style\examples.jsonl`, with everything about the clip at that moment, so deleting files loses nothing.
+  Good = kept, Done or posted by you. Bad = trashed and never posted by you. An Autopilot post you trash later is bad *and* counts as a
+  rule failure. The Autopilot's own untouched titles, trims and posts are logged as its own and **never** learned as yours.
+* **Learning.** After each new example, `learned.json` is rebuilt in the background from your last 50 examples, per streamer and for all
+  streamers together. It learns title case, word limit and emoji habit; fixed hashtags, hashtag count and credit line; captions
+  (always / never / only with speech); your usual trim shift and maximum length; your usual platforms; and the clip lengths you post.
+  **A rule changes only when at least 5 examples agree at least 70% of the time.** Otherwise the previous value stays.
+* **Teaching.** The `autoclip-teacher` Claude skill can write `taught.json`: title templates (`{streamer} {phrase} {quote} {count}`),
+  description hooks, the order of title sources, and skip rules (`skip_terms`, `need_speech`). It may not write anything else.
+  Rules are merged as *defaults, then learned, then taught*. A broken file or field is ignored, and the Autopilot window lists the problem.
+* **What Autopilot does with it.** It trims by your shifts (kept inside the draft), and it never adds captions to a clip without speech.
+  It makes a fresh 9:16 export when the latest one does not match. It writes the title and description your way unless you already
+  edited them. It posts only to your usual platforms *among the ones you ticked*. Clips your pick rules rule out are **skipped** (shown on
+  the card and in the log). Style can only shape or skip a post: it never raises a limit, adds a platform or streamer, or lowers a threshold.
+* The review page's title suggestions follow the same rules. The rules version used is stored on each posted clip and in the log, so you
+  can tell which rules made a post.
+* Autopilot window, **My style**: number of examples, last update, and each rule with *learned* or *taught*. Untick **Use my style** to
+  go back to the plain suggestions.
 
 ## Vertical clips: webcam on top, gameplay below (Reels / TikTok / Shorts)
 Every clip is exported **automatically as a ready 1080x1920, 30 fps, exactly 30 s video**. Until you teach it where a streamer's
@@ -250,13 +293,14 @@ Other options: whole screen on a blurred background, plain center crop, adjustab
 Without a saved box, captions sit on the line between webcam and gameplay.
 
 ## Post text (title + description) for every clip
-Open **Post text** on any clip. Titles are built from what is specific to that clip: the phrase chat was spamming ("NO WAY", "KEKW"),
+Open **② Post text** on any clip. Titles are built from what is specific to that clip: the phrase chat was spamming ("NO WAY", "KEKW"),
 how big the spike was, whether the streamer got loud, and which reaction it was (funny / shock / hype). Buttons:
 **↻ Other title** steps through six options, and fetches a brand-new set when they run out; **🔄 New ideas** makes a new set right away
 (titles already shown for that clip are never repeated); **🎧 From what is said** listens to the clip (needs `faster-whisper`, see Captions)
-and quotes the streamer's own words in the titles. The description gets a hook line (or the quote), a credit line and hashtags; text you
+and quotes the streamer's own words in the titles. The description gets a hook line (or the quote), a credit line, and the streamer's **@tag** followed by the hashtags (the @tag is always there); text you
 edited yourself is never overwritten. These are rule-based suggestions, not AI-written copy.
-Set nicer names in `config.toml`:  `display_names = { kaicenat = "Kai Cenat" }`,  `hashtags = ["fyp", "gaming"]`,  `credit_line = false`.
+Set nicer names in `config.toml`:  `display_names = { kaicenat = "Kai Cenat" }`,  `handles = { kaicenat = "kaicenat" }` (the @tag, when their TikTok / Instagram handle differs from the channel name; for YouTube the @handle comes from an
+`youtube.com/@name` link, and a plain video link gets no @tag unless you add it here, so a stranger is never tagged),  `hashtags = ["fyp", "gaming"]`,  `credit_line = false`.
 
 ## Video quality
 The biggest factor is the quality the stream is **recorded** at: the default is now the stream's best (usually 1080p60), because a webcam

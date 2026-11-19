@@ -11,7 +11,13 @@ Posting to public accounts cannot be undone, so every rule below is enforced her
   * Never twice: a platform that already has this clip is skipped, and a post that was started but never reported back (crash, power
     cut) is NOT retried by itself, because it may have gone out.
   * Circuit breaker: if you trash too many of its recent posts it switches itself to "Suggest" and says why.
+  * Score rules: it only ever posts clips scoring at least `min_score` (70). Clips scoring under `trash_below` (40) from the streamers you
+    ticked are moved to Trash (not deleted: Undo brings them back, "Delete trashed files" frees the space). Clips in between are left
+    for you. These trashes are the Autopilot's, never counted as your taste or style.
   * Everything it does is written to autopilot_log.jsonl next to your settings.
+  * Your style (style.py, switch: use_style): trim, captions, title and description the way you do them, only your usual platforms
+    (always among the ticked ones), and clips your pick rules say you would not post are skipped. Style can only shape a post or skip
+    it: none of the limits above are read from it.
 
 It runs inside `python -m autoclip run` (a thread), or on its own with `python -m autoclip autopilot run`.
 """
@@ -19,6 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -26,23 +33,25 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import settings, share, taste
+from . import settings, share, style, taste
 
 log = logging.getLogger("autoclip.autopilot")
 
 MODES = ("off", "suggest", "post")
 DEFAULTS = {"mode": "off", "platforms": [], "provider": "auto", "channels": [], "max_per_day": 3, "gap_min": 60, "delay_min": 10,
-            "min_precision": 0.85, "min_confidence": 0.0, "max_age_h": 24, "captions": False, "paused_reason": ""}
-RANGES = {"max_per_day": (1, 20), "gap_min": (0, 1440), "delay_min": (0, 1440), "max_age_h": (1, 168),
+            "min_precision": 0.85, "min_confidence": 0.0, "max_age_h": 24, "captions": False, "paused_reason": "",
+            "use_style": True, "min_score": 70, "trash_below": 40}
+RANGES = {"min_score": (0, 100), "trash_below": (0, 100), "max_per_day": (1, 20), "gap_min": (0, 1440), "delay_min": (0, 1440), "max_age_h": (1, 168),
           "min_precision": (0.6, 0.95), "min_confidence": (0.0, 0.99)}
 PROVIDERS = ("auto", "direct")              # only providers that post by themselves: the Share assistant needs you
-NAMES = {"max_per_day": "posts per 24 hours", "gap_min": "minutes between posts", "delay_min": "minutes before posting",
+NAMES = {"min_score": "lowest score it may post", "trash_below": "score under which it trashes a clip", "max_per_day": "posts per 24 hours", "gap_min": "minutes between posts", "delay_min": "minutes before posting",
          "max_age_h": "hours before a clip is too old", "min_precision": "required accuracy", "min_confidence": "required confidence"}
 RETRY_AFTER_S = 900
 MAX_ATTEMPTS = 2
 EXPORT_WAIT_S = 900                         # the recorder may still be rendering this clip's 9:16 version
 BREAKER_WINDOW, BREAKER_MIN, BREAKER_RATE = 10, 5, 0.3
-SKIP = {"posted", "posting", "held", "failed", "expired"}      # states autopilot never touches again
+SKIP = {"posted", "posting", "held", "failed", "expired", "trashed", "restored"}      # states autopilot never touches again ("skipped" is re-checked: rules change)
+MATCH_S = 0.05                              # an existing 9:16 export is reused only if its trim is this close to the planned one
 
 
 # ---------------------------------------------------------------------------------------------------- settings + log
@@ -82,6 +91,8 @@ def _clean(s: dict, strict: bool) -> dict:
                 v = list(dict.fromkeys(c.lower() for c in v))
             elif k in RANGES:
                 lo, hi = RANGES[k]
+                if isinstance(v, bool):
+                    raise ValueError(f"{NAMES[k]}: use a number")
                 try:
                     v = float(v) if isinstance(DEFAULTS[k], float) else int(v)
                 except (TypeError, ValueError):
@@ -89,14 +100,17 @@ def _clean(s: dict, strict: bool) -> dict:
                 if not lo <= v <= hi:
                     span = f"{lo:.0%} and {hi:.0%}" if isinstance(DEFAULTS[k], float) else f"{lo} and {hi}"
                     raise ValueError(f"{NAMES[k]} must be between {span}")
-            elif k == "captions":
-                v = bool(v)
+            elif k in ("captions", "use_style"):
+                if not isinstance(v, bool):
+                    raise ValueError(f"{k} must be true or false")
             elif k == "paused_reason":
                 v = str(v)[:300]
         except (ValueError, TypeError) as e:
             bad(str(e) if isinstance(e, ValueError) else f"bad value for {k}")
             continue                                              # a damaged file falls back to the safe default for that setting only
         out[k] = v
+    if not strict and out["trash_below"] > out["min_score"]:      # a hand-edited file: never trash clips it would otherwise post
+        out["trash_below"] = out["min_score"]
     return out
 
 
@@ -111,6 +125,8 @@ def load() -> dict:
 def save(patch: dict) -> dict:
     """Validate and store changes (ValueError says what is wrong). Choosing a mode yourself clears an automatic pause."""
     new = _clean({**load(), **{k: v for k, v in patch.items() if k in DEFAULTS}}, strict=True)
+    if new["trash_below"] > new["min_score"]:
+        raise ValueError("the trash score must not be higher than the lowest score it may post")
     if "mode" in patch and "paused_reason" not in patch:
         new["paused_reason"] = ""
     p = path()
@@ -160,11 +176,57 @@ def _handled(m: dict) -> set[str]:
     return {pl for pl, sh in (m.get("shares") or {}).items() if sh.get("status") in ("done", "draft", "opened")}
 
 
-def _latest_vertical(path_: Path, m: dict) -> dict | None:
+def _latest_vertical(path_: Path, m: dict, want: tuple[float, float, bool] | None = None) -> dict | None:
+    """The newest 9:16 export on disk; with `want` = (start, end, captions) only one that matches that plan."""
     for e in reversed(m.get("exports") or []):
         if e.get("vertical") and (path_.parent / e["file"]).is_file():
-            return e
+            if want is None:
+                return e
+            try:
+                if abs(float(e["start"]) - want[0]) <= MATCH_S and abs(float(e["end"]) - want[1]) <= MATCH_S and (
+                        want[2] is None or bool(e.get("captions")) == want[2]):
+                    return e
+            except (KeyError, TypeError, ValueError):
+                continue
     return None
+
+
+def _touched(m: dict) -> bool:
+    """You already did something with this clip (exported it, posted it, edited its text): never auto-trash it."""
+    d = m.get("description") or {}
+    return bool(m.get("shares")) or any(style.export_by(e, m) == "you" for e in m.get("exports") or []) \
+        or style.title_source(d) != "auto" or style.body_edited(d)
+
+
+def clip_score(m: dict) -> float | None:
+    """The clip's score as a number, or None when it is missing or broken (such a clip is never trashed or posted by score)."""
+    v = m.get("score")
+    if isinstance(v, bool):
+        return None
+    try:
+        x = float(v)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if x != x or abs(x) == float("inf"):
+        return None
+    return float(math.floor(x + 0.5))                           # the score the card shows: 39.6 is a 40, as on the page
+
+
+def _can_caption() -> bool:
+    """Is speech-to-text installed? Without it a captions export can only fail: skip that wasted encode."""
+    import importlib.util
+    try:
+        return importlib.util.find_spec("faster_whisper") is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _words(p: Path, m: dict) -> list:
+    try:
+        from .captions import cached_words
+        return cached_words(p.parent / m["file"]) if m.get("file") else []
+    except Exception:
+        return []
 
 
 class Autopilot:
@@ -184,6 +246,29 @@ class Autopilot:
             m["autopilot"] = {**(m.get("autopilot") or {}), "state": state, "at": round(self.clock(), 1), **kw}
             _write_json(p, m)
             return m
+
+    def _auto_trash(self, p: Path, score: float, limit: int, now: float) -> bool:
+        """Move a low-scoring clip to Trash (recoverable). Written as the Autopilot's, so it never teaches your taste."""
+        from .review import _write_json
+        msg = f"score {score:.0f} is under {limit}"
+        with self.store.lock:
+            try:
+                before = p.stat().st_mtime_ns
+                m = json.loads(p.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                return False
+            if m.get("status") != "new" or _touched(m):
+                return False
+            try:
+                if p.stat().st_mtime_ns != before:                # the review page (maybe another process) just wrote it: leave it
+                    return False
+            except OSError:
+                return False
+            m["status"] = "trash"
+            m["autopilot"] = {**(m.get("autopilot") or {}), "state": "trashed", "at": round(now, 1), "message": msg}
+            _write_json(p, m)
+        log_event(t=now, clip=m["id"], action="trashed", score=round(score), message=msg)
+        return True
 
     def hold(self, cid: str) -> bool:
         """'Don't post this one': never touched again by autopilot (it does not count as a Keep or Trash)."""
@@ -244,6 +329,21 @@ class Autopilot:
                 continue
             if state in SKIP or m.get("channel", "").lower() not in s["channels"]:
                 continue
+            score = clip_score(m)
+            age = now - _created(m)
+            if score is None:                                      # no usable score: never trashed, never posted, left for you
+                continue
+            if s["trash_below"] and score < s["trash_below"] and not _touched(m):
+                # like a post, a trash waits out your veto time, and old backlog is left alone
+                if s["delay_min"] * 60 <= age <= s["max_age_h"] * 3600 and self._auto_trash(p, score, s["trash_below"], now):
+                    acts.append({"action": "trashed", "clip": m["id"], "score": round(score)})
+                elif state in ("queued", "retry"):
+                    self._set(p, "cancelled", message=f"score {score:.0f} is under {s['trash_below']}")
+                continue
+            if score < s["min_score"]:                             # left for you to check: never posted
+                if state in ("queued", "retry"):
+                    self._set(p, "cancelled", message=f"score {score:.0f} is under {s['min_score']}")
+                continue
             todo = [pl for pl in usable if pl not in _handled(m)]
             if not todo:
                 continue
@@ -253,6 +353,20 @@ class Autopilot:
                 if state in ("queued", "retry"):
                     self._set(p, "expired" if not fresh else "cancelled", message="too old" if not fresh else "no longer looks like one you would keep")
                 continue
+            if s["use_style"]:                                     # your style may only narrow what happens, never widen it
+                rules = style.load(m.get("channel"))
+                todo = style.platforms_for(rules, todo)
+                if not todo:                                       # not a judgement of the clip: tick that platform and it comes back
+                    if state in ("queued", "retry"):
+                        self._set(p, "cancelled", message="none of your usual platforms is ticked")
+                    continue
+                why = style.skip_reason(m, rules, _words(p, m)) if state not in ("queued", "retry") else None
+                if why:
+                    if state not in ("queued", "retry", "skipped"):
+                        self._set(p, "skipped", message=why, rules=rules["meta"]["version"])
+                        log_event(t=now, clip=m["id"], action="skipped", message=why, rules=rules["meta"]["version"])
+                        acts.append({"action": "skipped", "clip": m["id"], "message": why})
+                    continue
             if state not in ("queued", "retry"):
                 self._set(p, "queued", p=pred["p"], post_at=round(now + s["delay_min"] * 60, 1), message="")
                 log_event(t=now, clip=m["id"], action="queued", p=pred["p"], post_at=round(now + s["delay_min"] * 60, 1))
@@ -279,21 +393,45 @@ class Autopilot:
         cid = m["id"]
         ap = m.get("autopilot") or {}
         attempts = int(ap.get("attempts", 0)) + 1
-        ex = _latest_vertical(p, m)
+        rules = style.load(m.get("channel")) if s["use_style"] else None
+        ver = rules["meta"]["version"] if rules else None
         try:
+            words = _words(p, m) if rules else []
+            if rules:
+                start, end = style.trim_for(m, rules)
+                from .captions import words_in_window
+                speech = (len(words_in_window(words, start, end)) >= rules["captions"]["min_words"]) if words else None
+                caps = style.captions_for(rules, speech, bool(s["captions"])) and _can_caption()
+                want = (start, end, caps if rules["captions"]["mode"] else None)        # no captions rule: any existing 9:16 is fine
+            else:
+                start, end, caps, want = float(m["suggest_start_s"]), float(m["suggest_end_s"]), bool(s["captions"]), None
+            yours = [e for e in m.get("exports") or [] if e.get("vertical") and style.export_by(e, m) == "you" and (p.parent / str(e.get("file"))).is_file()]
+            ex = yours[-1] if rules and yours else _latest_vertical(p, m, want)        # your own 9:16 export beats any rule
             if not ex:
-                if getattr(self.store.cfg, "vertical", "auto") == "auto" and now - _created(m) < EXPORT_WAIT_S:
+                if not _latest_vertical(p, m) and getattr(self.store.cfg, "vertical", "auto") == "auto" and now - _created(m) < EXPORT_WAIT_S:
                     return None                                    # the recorder is probably still rendering the vertical version
-                self.store.export(cid, float(m["suggest_start_s"]), float(m["suggest_end_s"]), True, bool(s["captions"]))
+                try:
+                    self.store.export(cid, start, end, True, caps, by="autopilot")
+                except Exception as e:                             # no speech after all / no speech-to-text: post it without captions
+                    if not caps or not (isinstance(e, ValueError) or type(e).__name__ == "CaptionsUnavailable"):
+                        raise
+                    caps = False
+                    self.store.export(cid, start, end, True, False, by="autopilot")
                 p2, m2 = self.store.find(cid)
-                ex = _latest_vertical(p2, m2) if p2 else None
+                ex = _latest_vertical(p2, m2, (start, end, caps if want[2] is not None else None) if want else None) if p2 else None
                 m = m2 or m
             if not ex:
                 raise RuntimeError("no 9:16 export could be made")
             d = m.get("description") or self.store._fresh_description(p, m)
-            texts = {pl: {"title": d.get("title", ""), "body": d.get("body", "")} for pl in todo}
-            self._set(p, "posting", attempts=attempts, platforms=todo)
-            log_event(t=now, clip=cid, action="attempt", platforms=todo, p=prob)      # written BEFORE anything is sent
+            title, body = d.get("title", ""), d.get("body", "")
+            if rules and (style.title_source(d) == "auto" or not style.body_edited(d)):
+                from .describe import suggest
+                mine = suggest(m, self.store.cfg, words or None, (start, end), rules=rules)
+                title = title if style.title_source(d) != "auto" else mine["title"]       # never replace text you wrote
+                body = body if style.body_edited(d) else mine["body"]
+            texts = {pl: {"title": title, "body": body} for pl in todo}
+            self._set(p, "posting", attempts=attempts, platforms=todo, **({"rules": ver} if ver else {}))
+            log_event(t=now, clip=cid, action="attempt", platforms=todo, p=prob, title=title[:200], **({"rules": ver} if ver else {}))      # written BEFORE anything is sent
             res = share.run(self.store, share.ShareRequest(cid, ex["file"], todo, texts, s["provider"], False, actor="autopilot"))
         except Exception as e:                                     # ShareError (validation), export failure, ...
             return self._failed(p, cid, attempts, str(e), now)
@@ -301,8 +439,8 @@ class Autopilot:
         if not done:
             return self._failed(p, cid, attempts, "; ".join(f"{pl}: {r['message']}" for pl, r in res.items()), now)
         msg = "; ".join(f"{pl}: {r['status']}" + (f" ({r['message']})" if r["status"] == "failed" else "") for pl, r in res.items())
-        self._set(p, "posted", p=prob, platforms=list(done), message=msg)
-        log_event(t=now, clip=cid, action="posted", platforms=list(done), p=prob, message=msg)
+        self._set(p, "posted", p=prob, platforms=list(done), message=msg, **({"rules": ver} if ver else {}))
+        log_event(t=now, clip=cid, action="posted", platforms=list(done), p=prob, message=msg, **({"rules": ver} if ver else {}))
         log.info("autopilot posted %s to %s (%.0f%% sure)", cid, ", ".join(done), prob * 100)
         return {"action": "posted", "clip": cid, "platforms": list(done), "p": prob}
 
@@ -332,6 +470,13 @@ class Autopilot:
         return t
 
 
+def _style_status() -> dict | None:
+    try:
+        return style.status()
+    except Exception:
+        return None
+
+
 def status(store) -> dict:
     """Everything the Autopilot window shows."""
     s = load()
@@ -354,6 +499,6 @@ def status(store) -> dict:
             "model": None if not m else {k: m.get(k) for k in ("state", "n", "keeps", "trashes", "auc", "base_rate", "trained_at", "reason")},
             "curve": taste.curve(m["oof"]) if m and m.get("oof") else [], "ready": ready,
             "posted_24h": sum(1 for e in posted if now - e["t"] < 86400), "regret": {"trashed": bad, "decided": decided},
-            "queue": queue, "recent": recent,
+            "queue": queue, "recent": recent, "style": _style_status(),
             "channels": sorted({str(c.get("channel", "")).lower() for _, c in metas if c.get("channel")}),
             "providers": share.providers_info(), "platforms": share.PLATFORMS}

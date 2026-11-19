@@ -81,5 +81,5 @@ def test_recorder_end_to_end_with_synthetic_source(tmp_path):
     rec.join(timeout=15)
     assert not rec.is_alive()
     assert not any(tmp_path.iterdir()), "buffer folder should be deleted on stop"
-    import subprocess as sp
-    assert sp.run(["pgrep", "-f", "testsrc2=size=320x180"], capture_output=True).returncode != 0, "ffmpeg leaked"
+    from clipfactory import ffmpeg_leaked
+    assert not ffmpeg_leaked("testsrc2=size=320x180"), "ffmpeg leaked"

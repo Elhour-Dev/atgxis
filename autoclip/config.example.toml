@@ -47,6 +47,8 @@ max_clips_gb = 20
 # hashtags = ["fyp", "viral", "streamer", "twitch", "clips"]
 # credit_line = true                       # "Clip from <streamer>: <link>" in the description
 # display_names = { kaicenat = "Kai Cenat" }
+# handles = { kaicenat = "kaicenat" }       # the streamer is always @tagged in the description: set this when their
+#                                           # TikTok / Instagram handle differs from the channel name
 
 # sharpen = 0.0              # 0 = off; 0.3-0.8 sharpens the webcam panel of vertical clips
 # --- extra signals ---

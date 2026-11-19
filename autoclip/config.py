@@ -89,6 +89,7 @@ class Config:
     hashtags: list[str] = field(default_factory=lambda: ["fyp", "viral", "streamer", "twitch", "clips"])
     credit_line: bool = True    # add "Clip from <streamer>: <link>" to the suggested description
     display_names: dict[str, str] = field(default_factory=dict)   # e.g. { kaicenat = "Kai Cenat" }
+    handles: dict[str, str] = field(default_factory=dict)         # the @tag in descriptions when it differs, e.g. { kaicenat = "kaicenat" }
 
     bots: list[str] = field(default_factory=lambda: list(DEFAULT_BOTS))
     hype_terms: list[str] = field(default_factory=lambda: list(DEFAULT_HYPE))

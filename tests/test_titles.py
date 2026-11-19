@@ -74,3 +74,41 @@ def test_new_titles_endpoint_never_dead_ends_and_keeps_your_text(tmp_path, monke
     assert code == 200 and ("faster-whisper" in d["note"] or "Could not listen" in d["note"])
     assert call("/api/describe/new", {"id": "nope"})[0] == 400
     srv.shutdown()
+
+
+def test_the_streamer_is_always_tagged_with_the_hashtags():
+    from autoclip import describe, style
+    from autoclip.config import Config
+    from clipfactory import meta
+    tags = describe.suggest(meta(1), Config())["body"].splitlines()[-1].split()
+    assert tags[0] == "@fav" and all(t.startswith("#") for t in tags[1:])
+    rules = style.load("fav")
+    rules["body"].update(channel_tag=False, hashtags_max=0)                                     # even when your style drops every hashtag
+    assert describe.suggest(meta(1), Config(), rules=rules)["body"].splitlines()[-1] == "@fav"
+    cfg = Config()
+    cfg.handles = {"FAV": "@fav.official"}                                                      # a different handle on TikTok / Instagram
+    assert describe.suggest(meta(1), cfg)["body"].splitlines()[-1].split()[0] == "@fav.official"
+
+
+def test_youtube_streamers_are_tagged_only_when_their_handle_is_known():
+    from autoclip import describe
+    from autoclip.config import Config
+    yt = {"channel": "yt_dQw4w9WgXcQ", "platform": "youtube", "source_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"}
+    assert describe.mention(yt, Config()) == ""                                                 # a video link: unknown, no wrong @
+    assert describe.mention({**yt, "channel": "yt_MrBeast", "source_url": "https://www.youtube.com/@MrBeast/live"}, Config()) == "@MrBeast"
+    cfg = Config()
+    cfg.handles = {"yt_dQw4w9WgXcQ": "mrbeast", "fav": "!!!"}
+    assert describe.mention(yt, cfg) == "@mrbeast"
+    assert describe.mention({"channel": "fav"}, cfg) == "@fav"                                 # a handle that cleans to nothing falls back
+    assert describe.mention({"channel": "x" * 40}, Config()) == ""                             # too long to be a real handle: no tag
+    assert describe.mention({**yt, "channel": "yt_Some-Name", "source_url": "https://www.youtube.com/@Some-Name/live"}, Config()) == ""
+    cfg.handles = ["not", "a", "table"]
+    assert describe.mention({"channel": "fav"}, cfg) == "@fav"                                 # a broken setting is ignored
+
+
+def test_the_tag_is_never_added_twice():
+    from autoclip import describe
+    from autoclip.config import Config
+    for body in ("thanks @xqc.", "thanks @XQC!", "@xqc #fyp"):
+        assert describe.with_mention(body, {"channel": "xqc"}, Config()) == body
+    assert describe.with_mention("hi @xqcow", {"channel": "xqc"}, Config()).endswith("@xqc")

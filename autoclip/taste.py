@@ -67,7 +67,15 @@ def _write_atomic(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-    os.replace(tmp, path)
+    for i in range(10):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:                                   # Windows: someone is reading it right now
+            if i == 9:
+                tmp.unlink(missing_ok=True)
+                raise
+            time.sleep(0.05)
 
 
 # ---------------------------------------------------------------------------------------------------- features
@@ -225,6 +233,8 @@ def import_existing(root: Path) -> int:
             m = json.loads(p.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
+        if (m.get("autopilot") or {}).get("state") == "trashed" and m.get("status") == "trash":
+            continue                                           # moved to Trash by the Autopilot's score rule, not by you
         if m.get("id") and m["id"] not in known and m.get("status") in ("keep", "trash", "done"):
             # a trashed clip you had posted yourself was trashed to free space, not because it was bad
             mine = posted_by_you(m)

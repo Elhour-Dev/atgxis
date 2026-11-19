@@ -44,14 +44,21 @@ class Rig:
         self.store = review.Store(self.root, Config())
         self.ap = autopilot.Autopilot(self.store)
         self.n = 100
-        autopilot.save({"mode": "post", "platforms": ["tiktok"], "channels": [GOOD_CH], "delay_min": 10, "min_precision": 0.8})
+        autopilot.save({"mode": "post", "platforms": ["tiktok"], "channels": [GOOD_CH], "delay_min": 10, "min_precision": 0.8,
+                        "min_score": 0, "trash_below": 0})                              # score rules have their own tests
 
     def clip(self, channel=GOOD_CH, *, age_s=60, export=True, **kw):
         self.n += 1
         return write_clip(self.root, meta(self.n, channel, created=self.now - age_s, **kw), export=export)
 
     def read(self, path):
-        return json.loads(path.read_text(encoding="utf-8"))
+        for i in range(20):                                    # Windows: the autopilot thread may be replacing the file right now
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))
+            except (PermissionError, ValueError):
+                if i == 19:
+                    raise
+                time.sleep(0.02)
 
     def tick(self, minutes=0):
         return self.ap.tick(self.now + minutes * MIN)
@@ -185,7 +192,7 @@ def test_old_clips_are_not_posted(rig):
 def test_it_waits_for_the_recorders_vertical_and_makes_one_itself_when_that_is_not_coming(rig, monkeypatch):
     made = []
 
-    def fake_export(cid, start, end, vertical, captions):
+    def fake_export(cid, start, end, vertical, captions, by="you"):
         p, m = rig.store.find(cid)
         (p.parent / "made_v.mp4").write_bytes(b"x")
         with rig.store.lock:
@@ -431,3 +438,169 @@ def test_done_is_neither_regret_nor_a_clip_to_post(rig):
     p = rig.clip(status="done")
     assert all(a["action"] != "paused" for a in rig.tick(0))
     assert rig.ap_state(p) is None and rig.tick(30) is not None and rig.provider.calls == []  # a done clip is never queued or posted
+
+
+# ------------------------------------------------------------------ score rules: post 70+, leave 40-69 for you, trash under 40
+def scored(rig, score, **kw):
+    p = rig.clip(**kw)
+    m = rig.read(p)
+    m["score"] = score
+    for e in m["exports"]:
+        e["by"] = "recorder"                                                                 # the recorder's 9:16, not yours
+    from autoclip.describe import suggest
+    d = suggest(m, Config())                                                                 # exactly what the recorder writes
+    m["description"] = {**d, "auto_body": d["body"], "title_src": "auto", "body_edited": False}
+    p.write_text(json.dumps(m), encoding="utf-8")
+    return p
+
+
+def test_score_rules_post_only_high_scores_and_trash_low_ones(rig):
+    autopilot.save({"min_score": 70, "trash_below": 40, "delay_min": 0})
+    hi, mid, low = scored(rig, 85), scored(rig, 55), scored(rig, 20)
+    acts = rig.tick(0)
+    assert {a["action"] for a in acts} == {"queued", "trashed"}
+    assert rig.ap_state(hi) == "queued" and rig.ap_state(mid) is None
+    assert rig.read(low)["status"] == "trash" and rig.ap_state(low) == "trashed"
+    assert rig.read(mid)["status"] == "new"                                                  # left for you to check
+    rig.tick(11)
+    assert [c[1] for c in rig.provider.calls] == [hi.name.replace(".clip.json", "_v.mp4")]
+    rig.tick(200)
+    assert len(rig.provider.calls) == 1                                                      # the 55 is never posted
+    assert any(e["action"] == "trashed" for e in autopilot.read_log())
+
+
+def test_its_trash_is_not_your_taste_and_undo_sticks(rig):
+    autopilot.save({"min_score": 70, "trash_below": 40, "delay_min": 0})
+    low = scored(rig, 10)
+    before = taste.counts()["total"]
+    rig.tick(0)
+    assert rig.read(low)["status"] == "trash"
+    assert taste.counts()["total"] == before                                                  # not learned as your Trash
+    assert taste.import_existing(rig.root) == 0                                               # not even when old decisions are imported
+    cid = rig.read(low)["id"]
+    assert rig.store.set_status(cid, "new")                                                   # you bring it back
+    rig.tick(1)
+    assert rig.read(low)["status"] == "new"                                                   # and it stays back
+
+
+def test_score_rules_spare_clips_you_worked_on_and_streamers_you_did_not_tick(rig):
+    autopilot.save({"min_score": 70, "trash_below": 40, "delay_min": 0})
+    mine = scored(rig, 10)
+    m = rig.read(mine)
+    m["description"]["title_src"] = "typed"
+    mine.write_text(json.dumps(m), encoding="utf-8")
+    other = scored(rig, 10, channel=BAD_CH)
+    low = scored(rig, 10)
+    rig.tick(0)
+    assert rig.read(low)["status"] == "trash"                                                 # the rule did run
+    assert rig.read(mine)["status"] == "new" and rig.read(other)["status"] == "new"
+
+
+def test_score_rules_do_nothing_unless_posting_is_on(rig):
+    autopilot.save({"mode": "suggest", "min_score": 70, "trash_below": 40})
+    low = scored(rig, 5)
+    rig.tick(0)
+    assert rig.read(low)["status"] == "new"
+
+
+def test_score_settings_are_checked():
+    with pytest.raises(ValueError):
+        autopilot.save({"min_score": 50, "trash_below": 60})
+    with pytest.raises(ValueError):
+        autopilot.save({"min_score": 101})
+    assert autopilot.load()["min_score"] == 70 and autopilot.load()["trash_below"] == 40
+
+
+def test_the_page_says_it_would_post_only_above_the_score_floor(rig):
+    autopilot.save({"min_score": 70, "trash_below": 0})
+    scored(rig, 90)
+    scored(rig, 50)
+    picks = {round(c["score"]): (c.get("taste") or {}).get("pick") for c in rig.store.list()}
+    assert picks[50] is False
+
+
+def test_a_trash_waits_out_your_veto_time_and_leaves_old_backlog_alone(rig):
+    autopilot.save({"min_score": 70, "trash_below": 40, "delay_min": 10, "max_age_h": 24})
+    fresh, old = scored(rig, 10), scored(rig, 10, age_s=3 * 86400)
+    rig.tick(0)
+    assert rig.read(fresh)["status"] == "new"                                                 # still inside your veto time
+    rig.tick(11)
+    assert rig.read(fresh)["status"] == "trash" and rig.read(old)["status"] == "new"
+
+
+def test_a_missing_or_broken_score_is_never_trashed_and_never_crashes(rig):
+    autopilot.save({"min_score": 70, "trash_below": 40, "delay_min": 0})
+    a, b = scored(rig, None), scored(rig, "abc")
+    rig.tick(0)
+    rig.tick(30)
+    assert rig.read(a)["status"] == "new" and rig.read(b)["status"] == "new" and rig.provider.calls == []
+    assert len(rig.store.list()) == 2                                                         # the review page still works
+
+
+def test_a_title_you_typed_before_this_update_protects_the_clip(rig):
+    autopilot.save({"min_score": 70, "trash_below": 40, "delay_min": 0})
+    p = scored(rig, 10)
+    m = rig.read(p)
+    m["description"] = {"title": "my own words", "body": "x", "alts": ["a suggestion"]}       # no markers: an older record
+    p.write_text(json.dumps(m), encoding="utf-8")
+    rig.tick(0)
+    assert rig.read(p)["status"] == "new"
+
+
+def test_a_keep_pressed_at_the_same_moment_wins(rig, monkeypatch):
+    autopilot.save({"min_score": 70, "trash_below": 40, "delay_min": 0})
+    p = scored(rig, 10)
+    real = autopilot._touched
+
+    def keep_in_between(m):                                                                   # the page writes the file mid-check
+        q = rig.read(p)
+        q["status"] = "keep"
+        time.sleep(0.02)
+        p.write_text(json.dumps(q), encoding="utf-8")
+        return real(m)
+    orig = rig.ap._auto_trash
+
+    def racing(path, score, limit, now):
+        monkeypatch.setattr(autopilot, "_touched", keep_in_between)
+        return orig(path, score, limit, now)
+    rig.ap._auto_trash = racing
+    rig.tick(0)
+    assert rig.read(p)["status"] == "keep"
+
+
+def test_after_undo_your_own_trash_is_yours(rig):
+    autopilot.save({"min_score": 70, "trash_below": 40, "delay_min": 0})
+    p = scored(rig, 10)
+    rig.tick(0)
+    cid = rig.read(p)["id"]
+    assert rig.read(p)["status"] == "trash"
+    rig.store.set_status(cid, "new")
+    assert rig.ap_state(p) == "restored"
+    rig.store.set_status(cid, "trash")
+    rig.tick(1)
+    assert rig.read(p)["status"] == "trash" and rig.ap_state(p) == "restored"
+
+
+def test_a_hand_edited_trash_score_above_the_post_score_is_capped(rig):
+    autopilot.path().write_text(json.dumps({"min_score": 70, "trash_below": 90}), encoding="utf-8")
+    assert autopilot.load()["trash_below"] == 70
+
+
+def test_scores_are_judged_as_the_card_shows_them(rig):
+    autopilot.save({"min_score": 70, "trash_below": 40, "delay_min": 0})
+    shown_40, shown_70 = scored(rig, 39.6), scored(rig, 69.6)
+    rig.tick(0)
+    assert rig.read(shown_40)["status"] == "new" and rig.ap_state(shown_70) == "queued"
+    assert autopilot.clip_score({"score": 39.4}) == 39 and autopilot.clip_score({"score": float("inf")}) is None
+    assert autopilot.clip_score({"score": 10 ** 400}) is None                                  # a corrupted file never crashes it
+
+
+def test_every_post_tags_the_streamer_even_with_an_old_description(rig):
+    p = rig.clip()
+    m = rig.read(p)
+    sent = []
+    rig.provider.publish = lambda job: sent.append(job.text) or Result(True, "done", "ok", "https://x")
+    share.run(rig.store, share.ShareRequest(m["id"], m["exports"][0]["file"], ["tiktok"], {"tiktok": {"title": "t", "body": "Old text\n\n#fyp #funny"}}, "auto"))
+    assert "@fav #fyp #funny" in sent[-1]
+    share.run(rig.store, share.ShareRequest(m["id"], m["exports"][0]["file"], ["youtube"], {"youtube": {"title": "t", "body": "Hi @FAV look"}}, "auto"))
+    assert sent[-1].lower().count("@fav") == 1                                                   # never twice
