@@ -90,6 +90,7 @@ class ChannelWorker(threading.Thread):
             self.recorder.on_segments = self.meter.submit
         self.pending: list[tuple[float, float, float, Spike]] = []   # (cut_at, a, b, spike)
         self._jobs: list[Future] = []
+        self._announced_ready = False
         self.clips_made = 0
         self.last_clip_at = 0.0
         self.root = out_root
@@ -125,6 +126,7 @@ class ChannelWorker(threading.Thread):
         for sp in self.detector.advance(now - self._grace):
             self.stats["spikes"] += 1
             self._schedule(sp)
+        self._announce_ready()
         for note in self.detector.pop_notes():
             self.stats["near_misses"] += 1
             log.info("[%s] %s", self.label, note)
@@ -134,6 +136,15 @@ class ChannelWorker(threading.Thread):
         self._jobs = [f for f in self._jobs if not f.done()]
         if now - self._snap_at >= 5:
             self._refresh_snapshot(now)
+
+    def _announce_ready(self):
+        """Once: what the warm-up learned, so you can check it against what you see in the channel's chat."""
+        d = self.detector
+        if d.ready and not self._announced_ready:
+            self._announced_ready = True
+            log.info("[%s] READY: normal chat = %.0f different chatters per %ds (learned from %ds of connected chat, %d messages heard). "
+                     "A spike needs %.0f chatters. Clipping is active.", self.label, d.normal_level(), self.cfg.window_s, d.learned,
+                     getattr(self.chat, "messages", 0), d.spike_bar())
 
     def _chat_connected(self) -> bool:
         ev = getattr(self.chat, "connected", None)             # chat readers without the flag (tests, custom) count as connected
@@ -196,7 +207,7 @@ class ChannelWorker(threading.Thread):
         elif not s.get("chat_ok", True):
             body = "CHAT RECONNECTING (video is still recording, spikes cannot be detected until chat is back)"
         elif s["warmup_left"] > 0:
-            body = f"learning normal chat level ({s['warmup_left']}s left)"
+            body = f"learning normal chat level ({s['warmup_left']}s of chat still needed)"
         else:
             body = f"chat {s['msgs_per_min']} msg/min (normal {s['normal']:.0f} chatters)"
         return f"{self.label:<18s} {body}  | spikes {s['spikes']}, clips {s['clips']}" + (f" (last {s['last_clip']})" if s["last_clip"] else "")

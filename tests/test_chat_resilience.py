@@ -141,3 +141,69 @@ def test_status_says_chat_is_reconnecting(tmp_path):
     down.connected.set()
     assert w._chat_connected() is True
     w.lanes.shutdown()
+
+
+# ---- the 90-second warm-up must be 90 seconds of chat actually heard -----------------------------------------------
+def _clock(d):
+    return (d.last_sec + 1) if d.last_sec is not None else 1000
+
+
+def _feed(d, seconds, per_sec, chat_ok=True):
+    """Normal chat (`per_sec` different people each second) for `seconds` seconds, with the chat connection up or down."""
+    d.chat_ok, out, start = chat_ok, [], _clock(d)
+    for s in range(start, start + seconds):
+        if chat_ok:
+            for u in range(per_sec):
+                d.add(ChatEvent(t=s + .5, user=f"u{u}", text="hi"))
+        out += d.advance(s + 1)         # like the worker: the clock lags, so this second's chat is not 'late'
+    return out
+
+
+def _burst(d, n=25, secs=4):
+    out, start = [], _clock(d)
+    for s in range(start, start + secs):
+        for u in range(n):
+            d.add(ChatEvent(t=s + .5, user=f"b{u}", text="KEKW"))
+        out += d.advance(s + 1)         # like the worker: the clock lags, so this second's chat is not 'late'
+    return out
+
+
+def test_warmup_counts_only_seconds_with_chat_connected():
+    """Chat was down for most of the first 90 s (many timeouts): the old clock-based warm-up declared itself ready with almost
+    nothing learned, so the 'normal' level was far too low and ordinary busy chat looked like a spike."""
+    cfg = Config(warmup_s=90, baseline_s=300, window_s=10, min_users=6, audio_assist=False)
+    d = SpikeDetector(cfg)
+    assert _feed(d, 80, 0, chat_ok=False) == []                        # 80 s of dead chat at the start
+    assert not d.ready and d.warmup_left() == 90                       # none of it counts
+    _feed(d, 10, 8)                                                    # 10 s of real chat (8 people a second)
+    assert d.warmup_left() == 80 and not d.ready                       # the clock says 90 s passed; only 10 s were learned
+    assert _burst(d) == [], "must not clip while it has hardly learned what normal looks like"
+    _feed(d, 90, 8)                                                    # real chat goes on: now it is really ready
+    assert d.ready and d.warmup_left() == 0
+    assert d.spike_bar() >= 6 and d.normal_level() >= 8                # learned from real chat, not from the silence
+    assert len(_burst(d) + _feed(d, 70, 8)) >= 1                       # and a real burst is caught
+
+
+def test_warmup_is_unchanged_when_chat_is_always_connected():
+    cfg = Config(warmup_s=20, baseline_s=300, window_s=10, min_users=6, audio_assist=False)
+    d = SpikeDetector(cfg)
+    _feed(d, 19, 4)
+    assert not d.ready
+    _feed(d, 2, 4)
+    assert d.ready and d.warmup_left() == 0
+
+
+def test_worker_announces_what_it_learned(tmp_path, caplog):
+    caplog.set_level("INFO")
+    stop = threading.Event()
+    chat = threading.Thread()
+    chat.messages = 1234
+    w = ChannelWorker(Config(buffer_dir=str(tmp_path), warmup_s=20, window_s=10, audio_assist=False), "kai", tmp_path / "c", stop,
+                      source_cmd=["x"], chat_factory=lambda s: chat)
+    _feed(w.detector, 25, 9)
+    w._announce_ready()
+    assert "[kai] READY: normal chat = 9 different chatters per 10s" in caplog.text and "1234 messages heard" in caplog.text
+    n = caplog.text.count("READY")
+    w._announce_ready()
+    assert caplog.text.count("READY") == n                              # said once
+    w.lanes.shutdown()

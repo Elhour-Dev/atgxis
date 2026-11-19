@@ -28,7 +28,12 @@ python -m autoclip run shroud                               # Twitch channel (na
 python -m autoclip run shroud xqc https://www.youtube.com/watch?v=VIDEOID   # several at once
 python -m autoclip review                                   # later: opens the review page
 ```
-* The first **90 s** of each run is spent learning the channel's normal chat level; nothing is clipped yet.
+* The first **90 s** of each run is spent learning the channel's normal chat level; nothing is clipped yet. These are 90 seconds of chat
+  *actually heard*: seconds while the chat connection was down (timeouts) or during a raid do not count, so the warm-up simply takes longer.
+  When it is done the log says, per channel, e.g. `READY: normal chat = 14 different chatters per 10s (learned from 90s of connected chat,
+  1240 messages heard). A spike needs 28 chatters.` **How to check it did its job:** open that channel's chat; 14 is roughly how many different
+  people write in 10 s on a calm stretch. A tiny number for a big channel, or very few messages heard, means chat was missing while it learned
+  (the normal level also keeps correcting itself: it is the median of the last 5 minutes of calm chat).
 * Leave it running during the stream. **Ctrl+C** stops it cleanly: a moment that was just found is still cut (it is not lost), renders
   already running are finished, and renders still waiting in line are skipped (their draft exists; press **Export** in the review page).
 * Clips land in `clips\<channel>\<date_time>\` as **drafts**: ~40 s of context around the moment, made by stream copy in
