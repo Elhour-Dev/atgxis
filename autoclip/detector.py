@@ -105,6 +105,7 @@ class SpikeDetector:
         self.notes: list[str] = []      # human-readable events (near-misses) for the log
         self.near_run = 0
         self.near_flag = False
+        self.chat_ok = True             # False while the chat connection is down: silence then is not "quiet chat"
 
     # ---- input -------------------------------------------------------------------------------
     def add(self, ev: ChatEvent) -> None:
@@ -227,7 +228,7 @@ class SpikeDetector:
                     self.near_run = 0
                     if value < thr * 0.6:
                         self.near_flag = False
-            if warm and s >= self.cooldown_until and s >= self.raid_until and value >= thr:
+            if warm and self.chat_ok and s >= self.cooldown_until and s >= self.raid_until and value >= thr:
                 self.cur = _Acc(start=s - c.window_s + 1, baseline=base)
                 for i in range(s - c.window_s + 1, s + 1):
                     self.cur.add(self.buckets.get(i))
@@ -236,8 +237,8 @@ class SpikeDetector:
                 self.cur.audio_db = boost
                 self.state, self.low_run = "active", 0
             else:
-                # only learn "normal" from quiet times, never from raids or spikes
-                if s >= self.raid_until:
+                # only learn "normal" from quiet times, never from raids, spikes or a dead chat connection
+                if s >= self.raid_until and self.chat_ok:
                     self.samples.append((s, value))
                 while self.samples and self.samples[0][0] < s - c.baseline_s:
                     self.samples.popleft()
