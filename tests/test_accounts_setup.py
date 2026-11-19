@@ -2,6 +2,7 @@
 Uses the fake platform server from test_publish: nothing touches the real internet."""
 import json
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import pytest
@@ -58,6 +59,17 @@ def test_setup_guide_has_links_copy_values_and_troubleshooting():
     assert tt["Copy redirect address"] == "http://127.0.0.1:9123/oauth/callback"   # this page's real port, ready to paste
     assert tt["Copy scopes"] == accounts.TT_SCOPES
     assert any("redirect_uri_mismatch" in t["problem"] and "Desktop app" in t["fix"] for t in g["youtube"]["troubleshooting"])
+
+
+def test_tiktok_asks_only_for_the_scopes_the_mode_needs(world):
+    """Draft mode must not request video.publish: an app that lacks that scope would make TikTok refuse the whole sign-in."""
+    def scope(mode):
+        accounts.update("tiktok", client_key="ck", client_secret="cs", mode=mode)
+        return urllib.parse.parse_qs(urllib.parse.urlparse(accounts.begin_oauth("tiktok", 8765)).query)["scope"][0]
+    assert scope("draft") == "user.info.basic,video.upload"
+    assert scope("direct") == "user.info.basic,video.upload,video.publish"
+    accounts.update("tiktok", mode=None)
+    assert "video.publish" not in scope("draft")
 
 
 def test_explain_oauth_error():

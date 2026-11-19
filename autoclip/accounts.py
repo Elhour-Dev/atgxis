@@ -33,7 +33,8 @@ ENDPOINTS = {
     "tt_api": "https://open.tiktokapis.com/v2",
 }
 YT_SCOPE = "https://www.googleapis.com/auth/youtube.upload"
-TT_SCOPES = "user.info.basic,video.upload,video.publish"
+TT_SCOPES = "user.info.basic,video.upload"                 # Draft mode (the default): the video waits in your TikTok inbox
+TT_SCOPES_DIRECT = TT_SCOPES + ",video.publish"            # Direct post mode only: asking for it otherwise fails if the app lacks that scope
 FIELDS = {                      # what the user must give us, per platform (secret ones are never shown again)
     "youtube": [("client_id", "OAuth client ID", False), ("client_secret", "OAuth client secret", True)],
     "instagram": [("access_token", "Instagram access token", True)],
@@ -232,8 +233,8 @@ _SETUP = {
              "link": ("https://developers.tiktok.com/apps/", "Open TikTok for Developers")},
             {"text": "In Login Kit add this redirect address EXACTLY (it contains this page's port number):",
              "copy": ("redirect_uri", "Copy redirect address")},
-            {"text": "Enable these scopes, and add your own TikTok account as a test user (while TikTok has not reviewed your app only "
-                     "test users can sign in):",
+            {"text": "Enable these scopes (Draft mode needs only these; Direct post mode also needs video.publish), and add your own "
+                     "TikTok account as a test user (while TikTok has not reviewed your app only test users can sign in):",
              "copy": ("scopes", "Copy scopes")},
             {"text": "Paste the client key and secret below and press Save and connect. TikTok only allows private direct posts for apps "
                      "it has not audited, so Draft mode (the video waits in your TikTok inbox, you press Post) is the default."},
@@ -241,7 +242,7 @@ _SETUP = {
         "troubleshooting": [
             ("TikTok complains about the redirect_uri", "The address in Login Kit must match the one above exactly, including the port. "
                                                       "Start the review page with the same --port every time."),
-            ("'scope not authorized' or an invalid_scope error", "Add both products (Login Kit and Content Posting API) and enable the scopes video.upload and video.publish."),
+            ("'scope not authorized' or an invalid_scope error", "Add both products (Login Kit and Content Posting API) and enable the scopes user.info.basic and video.upload (video.publish too, but only if you use Direct post)."),
             ("Posts are only visible to me", "Normal until TikTok audits your app. Use Draft mode, or ask TikTok for the audit."),
         ],
     },
@@ -277,8 +278,8 @@ _OAUTH_HELP = {
     },
     "tiktok": {
         "access_denied": "TikTok refused (or you pressed Cancel). Add your TikTok account as a test user in the app settings, then connect again.",
-        "invalid_scope": "Enable the scopes video.upload and video.publish (Login Kit and Content Posting API products) in the TikTok app.",
-        "scope_not_authorized": "Enable the scopes video.upload and video.publish (Login Kit and Content Posting API products) in the TikTok app.",
+        "invalid_scope": "Enable the scopes user.info.basic and video.upload (video.publish too, only for Direct post) in the TikTok app: Login Kit and Content Posting API products.",
+        "scope_not_authorized": "Enable the scopes user.info.basic and video.upload (video.publish too, only for Direct post) in the TikTok app: Login Kit and Content Posting API products.",
         "redirect_uri": "The redirect address in the TikTok app does not match this page's address. Copy it again from the Accounts window.",
         "invalid_client": "TikTok does not recognise the client key/secret. Copy them again from the app page.",
     },
@@ -374,7 +375,7 @@ def begin_oauth(platform: str, port: int) -> str:
     if platform == "tiktok":
         if not (a.get("client_key") and a.get("client_secret")):
             raise ApiError("save the client key and secret first")
-        q = {"client_key": a["client_key"], "scope": TT_SCOPES, "response_type": "code", "redirect_uri": redirect, "state": state}
+        q = {"client_key": a["client_key"], "scope": TT_SCOPES_DIRECT if a.get("mode") == "direct" else TT_SCOPES, "response_type": "code", "redirect_uri": redirect, "state": state}
         return ENDPOINTS["tt_auth"] + "?" + urllib.parse.urlencode(q)
     raise ApiError(f"{platform} does not use a browser sign-in")
 
