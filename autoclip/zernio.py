@@ -148,6 +148,8 @@ def zernio_upload(job: Job) -> Result:
         body["tiktokSettings"] = {"privacy_level": "PUBLIC_TO_EVERYONE", "allow_comment": True, "allow_duet": True, "allow_stitch": True,
                                   "commercial_content_type": "none", "content_preview_confirmed": True, "express_consent_given": True,
                                   "media_type": "video", "auto_add_music": False, "video_made_with_ai": False, "draft": draft}
+        if job.paid:                                   # never declare a paid campaign clip as non-commercial (you switch it on in TikTok)
+            del body["tiktokSettings"]["commercial_content_type"]
     st, _, raw = http("POST", base + "/posts", headers=auth, body=body, retries=0)    # never retried: a repeat could post twice
     d = as_json(raw)
     if st >= 300:

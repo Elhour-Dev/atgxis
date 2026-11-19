@@ -277,6 +277,61 @@ Taste decides *which* clips go out; style decides *how*: the trim, captions, tit
 * Autopilot window, **My style**: number of examples, last update, and each rule with *learned* or *taught*. Untick **Use my style** to
   go back to the plain suggestions.
 
+## 💰 Paid clipping campaigns (Content Rewards and the like)
+Press **💰 Campaigns** in the review page. You fill in `campaigns.json` there (it lives in your settings folder,
+`%APPDATA%\autoclip\campaigns.json`, so `git pull` never touches it). **Check and save** refuses anything wrong and says which
+campaign and field; nothing is saved until it is all right. **Insert example** shows every field:
+
+| Field | Meaning |
+|---|---|
+| `name`, `url` | campaign name and its page (the `https://` link you submit posts on) |
+| `channels`, `platforms` | the streamers it pays for; `tiktok` / `youtube` / `instagram` |
+| `rate_per_1k`, `min`, `cap` | $ per 1000 views, minimum payout, maximum payout (`0` = no cap). **`min` and `cap` are per campaign.** |
+| `ends`, `active`, `budget_empty` | end date (`"2026-12-31"` = until the end of that day, or `null`); `active: true` starts it (it is off until you say so); set `budget_empty` when the campaign says its budget is used up |
+| `rules.disclosure` | text burned into the first 3 seconds (`"Ad"`), or `null` |
+| `rules.hashtags` | hashtags every post must carry |
+| `rules.must_show` | `"facecam"`, `"overlay"`, `"handle"` (the streamer's @ is also burned in) or `null` |
+| `rules.min_len_s`, `rules.max_len_s` | clip length limits (`0` = none) |
+| `rules.need_speech`, `rules.no_ai`, `rules.notes` | reminders shown on the card (the Autopilot skips clips where nobody talks when `need_speech` is on) |
+
+While a campaign is **live** (active, not ended, budget not marked empty, cap not reached) every clip of its streamers:
+* keeps `must_show` visible: a split or crop layout that could cut it off is replaced by the full frame over a blurred fill. When the
+  app cannot be sure (e.g. "facecam" without a saved webcam layout) the card says so;
+* gets the disclosure burned in for the first 3 seconds (exports made for a campaign get `_ad` in their file name);
+* gets **"#ad" first** in the post text, every campaign hashtag and one credit line (never added twice);
+* can only be posted when the **pre-post check** passes. The card lists what blocks Post per platform: no disclosure in this export
+  (export it again), "#ad" not first, missing hashtags, too short / too long, a platform the campaign does not pay for, must_show not
+  kept, account not connected. The same check runs inside the posting code, for you and for the Autopilot.
+
+**Paid-promotion flags** are set where the official API allows it: TikTok direct posts that are not private get
+`brand_content_toggle` (Paid partnership); YouTube gets `paidProductPlacementDetails` and it is shown as set only when YouTube confirms
+it (if YouTube refuses the field, the video is uploaded without it). TikTok drafts, private TikTok posts (it is not sent there),
+Instagram, Zernio and the Share assistant do not set it: the card lists each flag that was not set, so you switch it on in the app.
+
+**After posting**: every campaign post is saved with its link (paste it when the platform gives none) and goes on the **To submit**
+list. The list has **one row per clip**: **Copy all links** (one per line, ready to paste into the campaign), **Open campaign**, and a
+**Submitted** tick per link. A post that only reached your drafts / inbox (or the Share assistant) goes on the list when you press
+**Mark as posted**, so the 30 minutes start when it is really public. You get a desktop notification when it is posted; the row turns
+red 25 minutes after the clip's **earliest** post (most campaigns want the link within 30), and the page warns you once more if you
+allowed its alerts. In the posts list below it, mark each post
+**Submitted / Approved / Rejected**; a rejection needs the campaign's reason and is saved as a *bad* example in your style log
+(`examples.jsonl`, with that reason) so the teacher skill can learn from it.
+
+**Stats per campaign**: posted, submitted, approved, rejected, views and estimated earnings:
+`min(views / 1000 × rate, cap) × 0.9`, and **$0 while that is under `min`**. Earnings count approved posts; the page also shows what
+it would be if the pending ones are approved. **Refresh views (YouTube)** asks YouTube for the view counts; this needs a YouTube login
+that may read statistics, so if it says it cannot, type the views in (TikTok and Instagram views are always typed in).
+
+**Autopilot**: streamers of a live campaign count as ticked for posting (never for auto-trash), on the campaign's platforms that you
+ticked. It only posts an export made for that campaign, trimmed to its length limits, and only when the pre-post check passes. It stops
+for that streamer the moment the campaign ends, reaches its cap or you set `budget_empty`. Every other Autopilot limit stays the same.
+
+### Your voice-over and hook text (originality)
+Platform programmes pay more for clips with your own touch. In **Export**, open **Make it original**: type a **hook** (big text for the
+first 3 seconds) and **🎙 Record** a voice-over in the page or **Pick a file** (webm / ogg / mp3 / wav / m4a, up to 25 MB). Tick
+**Use my voice-over** and export: your voice starts with the clip and the stream sound goes quieter while you talk. Clips that have them
+are tagged on the card (🎙 / 🪝). The voice-over file is kept next to the clip and deleted with it (Done / Delete trashed files).
+
 ## Vertical clips: webcam on top, gameplay below (Reels / TikTok / Shorts)
 Every clip is exported **automatically as a ready 1080x1920, 30 fps, exactly 30 s video**. Until you teach it where a streamer's
 webcam is, it uses a blurred full frame. Do this **once per streamer** (takes ~20 seconds):

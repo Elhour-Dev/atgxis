@@ -5,7 +5,9 @@ Posting to public accounts cannot be undone, so every rule below is enforced her
   * OFF until you switch it on. "Suggest" only marks picks in the review page; "Post" is the only mode that publishes.
   * It acts only when the model has PROVEN itself on clips it never saw while learning (taste.readiness), and only above that confidence.
   * Only channels you ticked (publishing someone else's stream needs their permission), only platforms you ticked, only through a
-    connected account, only a 9:16 export of the suggested trim.
+    connected account, only a 9:16 export of the suggested trim. Exception: streamers of a LIVE paid campaign you entered yourself
+    (campaigns.py) count as ticked for posting (never for auto-trash), only on that campaign's platforms you ticked, only with an
+    export made for the campaign, and only while the campaign's pre-post check passes.
   * A veto window: a pick waits `delay_min` minutes, marked in the review page, before it goes out. Trash it, or press "Don't post", to stop it.
   * A cap per 24 hours and a minimum gap between posts. Clips older than `max_age_h` are never posted.
   * Never twice: a platform that already has this clip is skipped, and a post that was started but never reported back (crash, power
@@ -33,7 +35,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import settings, share, style, taste
+from . import campaigns, settings, share, style, taste
 
 log = logging.getLogger("autoclip.autopilot")
 
@@ -176,10 +178,11 @@ def _handled(m: dict) -> set[str]:
     return {pl for pl, sh in (m.get("shares") or {}).items() if sh.get("status") in ("done", "draft", "opened")}
 
 
-def _latest_vertical(path_: Path, m: dict, want: tuple[float, float, bool] | None = None) -> dict | None:
-    """The newest 9:16 export on disk; with `want` = (start, end, captions) only one that matches that plan."""
+def _latest_vertical(path_: Path, m: dict, want: tuple[float, float, bool] | None = None, camp: dict | None = None) -> dict | None:
+    """The newest 9:16 export on disk; with `want` = (start, end, captions) only one that matches that plan; with `camp` only one
+    made for that paid campaign (disclosure burned in, must_show kept visible)."""
     for e in reversed(m.get("exports") or []):
-        if e.get("vertical") and (path_.parent / e["file"]).is_file():
+        if e.get("vertical") and (path_.parent / e["file"]).is_file() and (camp is None or campaigns.export_ready(e, camp)):
             if want is None:
                 return e
             try:
@@ -306,7 +309,8 @@ class Autopilot:
         if s["mode"] != "post":
             return []                                              # "suggest" needs no action: the review page marks the picks
         ready = taste.readiness(taste.model(), s["min_precision"], s["min_confidence"])
-        if not ready["ok"] or not s["platforms"] or not s["channels"]:
+        camps = campaigns.load()                                   # streamers of a LIVE paid campaign count as permitted
+        if not ready["ok"] or not s["platforms"] or not (s["channels"] or camps):
             return []
         metas = list(self.store._metas())
         bad, decided = self.regret(metas)
@@ -327,13 +331,19 @@ class Autopilot:
                 if state in ("queued", "retry"):
                     self._set(p, "cancelled", message="you decided on this clip")
                 continue
-            if state in SKIP or m.get("channel", "").lower() not in s["channels"]:
+            if state in SKIP:
+                continue
+            ticked = m.get("channel", "").lower() in s["channels"]
+            camp = campaigns.for_channel(m.get("channel"), now, camps) if camps else None
+            if not ticked and not camp:                            # e.g. its campaign ended, hit its cap or ran out of budget
+                if state in ("queued", "retry") and camps and campaigns.for_channel(m.get("channel"), now, camps, live=False):
+                    self._set(p, "cancelled", message="this streamer is no longer ticked or in a live campaign")
                 continue
             score = clip_score(m)
             age = now - _created(m)
             if score is None:                                      # no usable score: never trashed, never posted, left for you
                 continue
-            if s["trash_below"] and score < s["trash_below"] and not _touched(m):
+            if ticked and s["trash_below"] and score < s["trash_below"] and not _touched(m):     # only streamers you ticked are auto-trashed
                 # like a post, a trash waits out your veto time, and old backlog is left alone
                 if s["delay_min"] * 60 <= age <= s["max_age_h"] * 3600 and self._auto_trash(p, score, s["trash_below"], now):
                     acts.append({"action": "trashed", "clip": m["id"], "score": round(score)})
@@ -345,6 +355,10 @@ class Autopilot:
                     self._set(p, "cancelled", message=f"score {score:.0f} is under {s['min_score']}")
                 continue
             todo = [pl for pl in usable if pl not in _handled(m)]
+            if camp:                                               # only platforms the campaign pays for (and you ticked)
+                todo = [pl for pl in todo if pl in camp["platforms"]]
+                if not todo and state in ("queued", "retry"):
+                    self._set(p, "cancelled", message="none of the campaign's platforms is ticked or connected")
             if not todo:
                 continue
             pred = taste.predict(m)
@@ -367,6 +381,15 @@ class Autopilot:
                         log_event(t=now, clip=m["id"], action="skipped", message=why, rules=rules["meta"]["version"])
                         acts.append({"action": "skipped", "clip": m["id"], "message": why})
                     continue
+            why = self._campaign_skip(p, m, camp) if camp else None
+            if why:
+                if state in ("queued", "retry"):
+                    self._set(p, "cancelled", message=why)
+                elif state != "skipped":
+                    self._set(p, "skipped", message=why)
+                    log_event(t=now, clip=m["id"], action="skipped", message=why, campaign=camp["id"])
+                    acts.append({"action": "skipped", "clip": m["id"], "message": why})
+                continue
             if state not in ("queued", "retry"):
                 self._set(p, "queued", p=pred["p"], post_at=round(now + s["delay_min"] * 60, 1), message="")
                 log_event(t=now, clip=m["id"], action="queued", p=pred["p"], post_at=round(now + s["delay_min"] * 60, 1))
@@ -389,6 +412,24 @@ class Autopilot:
             acts.append(res)
         return acts
 
+    @staticmethod
+    def _campaign_skip(p: Path, m: dict, camp: dict) -> str | None:
+        """Why a campaign clip cannot pass the campaign's rules whatever the trim (length, speech), or None."""
+        try:
+            a, b, dur = float(m["suggest_start_s"]), float(m["suggest_end_s"]), float(m.get("duration_s") or m["suggest_end_s"])
+        except (KeyError, TypeError, ValueError):
+            return "the clip has no usable trim"
+        fit = campaigns.fit_trim(a, b, dur, camp)
+        if not fit:
+            return f"the draft is shorter than the {camp['rules']['min_len_s']:g} s that '{camp['name']}' asks for"
+        if camp["rules"]["need_speech"]:
+            words = _words(p, m)
+            if words:                                              # unknown (no speech-to-text): left to the card's warning
+                from .captions import words_in_window
+                if not words_in_window(words, *fit):
+                    return f"'{camp['name']}' needs speech, and nobody talks in this clip"
+        return None
+
     def _post(self, p: Path, m: dict, prob: float, todo: list[str], s: dict, now: float) -> dict | None:
         cid = m["id"]
         ap = m.get("autopilot") or {}
@@ -405,8 +446,19 @@ class Autopilot:
                 want = (start, end, caps if rules["captions"]["mode"] else None)        # no captions rule: any existing 9:16 is fine
             else:
                 start, end, caps, want = float(m["suggest_start_s"]), float(m["suggest_end_s"]), bool(s["captions"]), None
+            camp = campaigns.for_channel(m.get("channel"), now)
+            if camp:                                               # the campaign's length rule, and only an export made for it
+                fit = campaigns.fit_trim(start, end, float(m.get("duration_s") or end), camp)
+                if not fit:
+                    raise RuntimeError("the draft is shorter than the campaign's minimum length")
+                start, end = fit
+                want = (start, end, want[2] if want else None)
             yours = [e for e in m.get("exports") or [] if e.get("vertical") and style.export_by(e, m) == "you" and (p.parent / str(e.get("file"))).is_file()]
-            ex = yours[-1] if rules and yours else _latest_vertical(p, m, want)        # your own 9:16 export beats any rule
+            if camp:
+                yours = [e for e in yours if campaigns.export_ready(e, camp) and campaigns.length_ok(e, camp)]
+                ex = yours[-1] if yours else _latest_vertical(p, m, want, camp)
+            else:
+                ex = yours[-1] if rules and yours else _latest_vertical(p, m, want)        # your own 9:16 export beats any rule
             if not ex:
                 if not _latest_vertical(p, m) and getattr(self.store.cfg, "vertical", "auto") == "auto" and now - _created(m) < EXPORT_WAIT_S:
                     return None                                    # the recorder is probably still rendering the vertical version
@@ -418,7 +470,7 @@ class Autopilot:
                     caps = False
                     self.store.export(cid, start, end, True, False, by="autopilot")
                 p2, m2 = self.store.find(cid)
-                ex = _latest_vertical(p2, m2, (start, end, caps if want[2] is not None else None) if want else None) if p2 else None
+                ex = _latest_vertical(p2, m2, (start, end, caps if want[2] is not None else None) if want else None, camp) if p2 else None
                 m = m2 or m
             if not ex:
                 raise RuntimeError("no 9:16 export could be made")

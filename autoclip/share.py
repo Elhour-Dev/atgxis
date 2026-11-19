@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from . import settings, style, taste
+from . import campaigns, settings, style, taste
 
 PLATFORMS: dict[str, dict] = {
     "tiktok": {"label": "TikTok", "url": "https://www.tiktok.com/tiktokstudio/upload", "text_max": 2200},
@@ -38,6 +38,7 @@ class Job:
     title: str
     text: str            # caption / description exactly as it should be posted
     privacy: str = "public"
+    paid: bool = False   # a paid campaign clip: set the platform's paid-promotion flag where its API allows
 
 
 @dataclass
@@ -46,6 +47,7 @@ class Result:
     status: str          # "done" | "draft" (uploaded, you finish it in the app) | "opened" | "failed"
     message: str = ""
     url: str | None = None
+    paid_flag: str | None = None     # paid jobs: "set", or why it could not be set (you switch it on in the app)
 
 
 def compose(platform: str, title: str, body: str) -> tuple[str, str]:
@@ -140,10 +142,14 @@ def run(store, req: ShareRequest) -> dict[str, dict]:
     if not plats or any(p not in PLATFORMS for p in plats):
         raise ShareError("choose at least one platform: " + ", ".join(PLATFORMS))
     jobs, problems = [], []
+    camp = campaigns.for_channel(meta.get("channel"))          # a live paid campaign covers this streamer: its rules must pass
     for pl in plats:
         t = req.texts.get(pl) or {}
         from .describe import with_mention
         title, text = compose(pl, str(t.get("title", "")), with_mention(str(t.get("body") or ""), meta, getattr(store, "cfg", None)))   # always @streamer
+        if camp:
+            title, text = campaigns.finalize_text(pl, title, text, camp, meta, getattr(store, "cfg", None))
+            problems += [f"{PLATFORMS[pl]['label']}: {e}" for e in campaigns.check(camp, meta, ex, pl, title, text)]
         errs = check(pl, title, text, meta.get("duration_s"), bool(ex.get("vertical")))
         if errs:
             problems.append(f"{PLATFORMS[pl]['label']}: " + "; ".join(errs))
@@ -153,7 +159,7 @@ def run(store, req: ShareRequest) -> dict[str, dict]:
         why = prov.problems(pl)
         if why:
             problems.append(why)
-        jobs.append(Job(pl, video, title, text))
+        jobs.append(Job(pl, video, title, text, paid=bool(camp)))
     if problems:                                               # nothing is posted if ANY platform fails validation
         raise ShareError(" | ".join(problems))
     results: dict[str, dict] = {}
@@ -163,8 +169,16 @@ def run(store, req: ShareRequest) -> dict[str, dict]:
             r = prov.publish(job)
         except Exception as e:                                 # one platform failing must not stop or hide the others
             r = Result(False, "failed", f"{type(e).__name__}: {e}")
-        results[job.platform] = {"status": r.status, "message": r.message, "url": r.url, "ok": r.ok, "title": job.title, "text": job.text}
-        record(store, req.clip_id, job.platform, r, prov.name, ex["file"], req.actor)
+        if camp and r.status in ("done", "draft", "opened") and not r.paid_flag:
+            r.paid_flag = campaigns.FLAG_HELP[job.platform]
+        results[job.platform] = {"status": r.status, "message": r.message, "url": r.url, "ok": r.ok, "title": job.title, "text": job.text,
+                                 **({"paid_flag": r.paid_flag, "campaign": camp["id"]} if camp else {})}
+        record(store, req.clip_id, job.platform, r, prov.name, ex["file"], req.actor, camp["id"] if camp else None)
+        if camp and r.status == "done":                      # a draft goes on the list when you mark it posted
+            try:
+                campaigns.add_post(camp, req.clip_id, job.platform, r.url, job.title)
+            except Exception as e:                             # the post went out: a busy log file must not hide that
+                print(f"could not add the post to the campaign list (add it with Mark as posted): {e}")
         if req.actor == "you" and r.status in ("done", "draft") and not learned:
             learned = True                                     # once per share, however many platforms
             taste.record(meta, 1, "posted")                    # you chose to post it: a Keep (never overrides an explicit Trash)
@@ -184,13 +198,14 @@ def run(store, req: ShareRequest) -> dict[str, dict]:
     return results
 
 
-def record(store, clip_id: str, platform: str, r: Result, provider: str, file: str, actor: str = "you") -> None:
+def record(store, clip_id: str, platform: str, r: Result, provider: str, file: str, actor: str = "you", campaign: str | None = None) -> None:
     with store.lock:
         p, m = store.find(clip_id)
         if not p:
             return
         m.setdefault("shares", {})[platform] = {"status": r.status, "message": r.message, "url": r.url, "provider": provider,
-                                                "file": file, "actor": actor, "at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+                                                "file": file, "actor": actor, "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                                                **({"campaign": campaign, "paid_flag": r.paid_flag} if campaign else {})}
         from .review import _write_json
         _write_json(p, m)
 
@@ -214,5 +229,12 @@ def mark(store, clip_id: str, platform: str, status: str) -> bool:
         _write_json(p, m)
     if status == "done":
         taste.record(m, 1, "posted")                           # you posted it yourself: counts as a Keep
+        sh = (m.get("shares") or {}).get(platform) or {}
+        camp = campaigns.find(sh["campaign"]) if sh.get("campaign") else campaigns.for_channel(m.get("channel"))
+        if camp and platform in camp["platforms"]:             # posted for a campaign: it goes on your To-submit list
+            try:
+                campaigns.add_post(camp, clip_id, platform, sh.get("url"), str((m.get("description") or {}).get("title", "")))
+            except Exception as e:
+                print(f"could not add the post to the campaign list: {e}")
     style.record(m, "mark" if status == "done" else "mark_reset", "good" if status == "done" else "none", "you", p.parent)
     return True

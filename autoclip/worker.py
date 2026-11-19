@@ -21,6 +21,7 @@ from .describe import suggest as suggest_description
 from .disk import clips_gb, free_gb
 from .detector import ChatEvent, Spike, SpikeDetector
 from .lanes import Lanes
+from . import campaigns
 from .layout import LayoutStore
 from .recorder import Recorder
 
@@ -350,14 +351,18 @@ class ChannelWorker(threading.Thread):
                 self._warned_layout = True
                 log.info("[%s] no webcam/gameplay layout saved yet: vertical clips use a blurred full frame. "
                          "Open the review page and press 'Set layout' once for this channel.", self.label)
+            cp = campaigns.plan(meta, layout, True, c)                          # a paid campaign: keep must_show in, burn the disclosure
+            layout = cp["layout"]
+            ass = campaigns.burn(cp, None, True, c, sug[1] - sug[0], meta)
             fin = out.with_name(f"{cid}_vertical.mp4")
-            placed = export_clip(out, fin, sug[0], sug[1], c, vertical=True, layout=layout)
+            placed = export_clip(out, fin, sug[0], sug[1], c, vertical=True, ass_text=ass, layout=layout)
             if not placed:
                 self._count("failed_cuts")
                 return
             fin = placed if isinstance(placed, Path) else fin                    # may carry a _2 suffix if the name was locked
             rec = {"file": fin.name, "start": sug[0], "end": sug[1], "vertical": True, "captions": False,
-                   "layout": (layout or {}).get("mode", c.vertical_mode), "copy": self._copy_final(fin), "by": "recorder"}
+                   "layout": (layout or {}).get("mode", c.vertical_mode), "copy": self._copy_final(fin), "by": "recorder",
+                   **({"campaign": cp["record"]} if cp["record"] else {})}
             meta = _read_meta(meta_path) or meta                                 # re-read: you may have pressed Keep/Trash meanwhile
             meta.setdefault("exports", []).append(rec)
             _write_meta(meta_path, meta)

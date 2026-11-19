@@ -193,7 +193,7 @@ _log_lock = threading.Lock()
 
 
 def record(m: dict, event: str, verdict: str = "none", by: str = "you", base_dir: Path | None = None, rule_fail: bool = False,
-           when: float | None = None, learn: bool = True) -> None:
+           when: float | None = None, learn: bool = True, note: str | None = None) -> None:
     """Append one line. Never raises: pressing Keep must work even if the log cannot be written."""
     try:
         if not m or not m.get("id"):
@@ -204,6 +204,8 @@ def record(m: dict, event: str, verdict: str = "none", by: str = "you", base_dir
                 "by": by if by in ("you", "autopilot") else "you", "rules_ver": ver}
         if rule_fail:
             line["rule_fail"] = True
+        if note:                                                  # e.g. why a campaign rejected the post
+            line["reason"] = str(note)[:500]
         folder().mkdir(parents=True, exist_ok=True)
         with _log_lock, open(examples_path(), "a", encoding="utf-8") as f:
             f.write(json.dumps(line, ensure_ascii=False) + "\n")
