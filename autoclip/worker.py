@@ -128,7 +128,8 @@ class ChannelWorker(threading.Thread):
             self._schedule(sp)
         self._announce_ready()
         for note in self.detector.pop_notes():
-            self.stats["near_misses"] += 1
+            if note.startswith("near-miss"):
+                self.stats["near_misses"] += 1
             log.info("[%s] %s", self.label, note)
         for item in [p for p in self.pending if now >= p[0]]:
             self.pending.remove(item)
@@ -164,6 +165,8 @@ class ChannelWorker(threading.Thread):
         to be dropped), and only then is the buffer deleted."""
         try:
             sp = self.detector.flush()
+            for note in self.detector.pop_notes():
+                log.info("[%s] %s", self.label, note)
             if sp:
                 self.stats["spikes"] += 1
                 self._schedule(sp, immediate=True)

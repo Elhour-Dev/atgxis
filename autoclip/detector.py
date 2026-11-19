@@ -72,6 +72,24 @@ class _Acc:
 
 
 _TOKEN = re.compile(r"[^\W_]+|[^\w\s]", re.UNICODE)
+# Chat answering a poll or a question ("yes", "no", "left", "21+", "2651") looks like hype but is not a moment.
+# W / L / GG floods are NOT in here: those are real reactions and the clips people keep.
+_POLL = re.compile(r"^(\d+\+?|yes|no|y|n|left|right|up|down|a|b|c|nada)$")
+
+
+POLL_MIN_OF_ALL = 0.07   # ... and the answers must also be at least 7% of ALL messages in the spike (not just a few in a busy chat)
+
+
+def poll_share(top: list) -> float:
+    """Share of the 4 most repeated messages that are poll answers (0-1). An answer must be repeated (2+ times) to count:
+    a single "no" among hundreds of different messages is not a poll."""
+    top = top[:4]
+    total = sum(n for _, n in top)
+    return _poll_count(top) / total if total else 0.0
+
+
+def _poll_count(top: list) -> int:
+    return sum(n for t, n in top[:4] if n >= 2 and _POLL.match(str(t).strip().lower()))
 
 
 def _clamp(x: float, lo: float = 0.0, hi: float = 1.0) -> float:
@@ -287,7 +305,8 @@ class SpikeDetector:
         top = max(c for _, c in counts)
         return next((i for i, c in counts if c >= max(2, 0.25 * top)), s - self.cfg.window_s + 1)
 
-    def _finish(self, end: float) -> Spike:
+    def _finish(self, end: float) -> Spike | None:
+        """The finished spike, or None when chat was only answering a poll (noted in the log)."""
         cur = self.cur
         hype_frac = cur.hype / cur.n if cur.n else 0.0
         sp = Spike(start=cur.start, end=max(end, cur.start + 1), onset=cur.onset, peak_t=cur.peak_t, peak=cur.peak,
@@ -295,4 +314,7 @@ class SpikeDetector:
                    top=cur.texts.most_common(8), audio_db=round(cur.audio_db, 1))
         sp.score = score_spike(sp.peak, sp.baseline, sp.hype_frac)
         self.cur = None
+        if self.cfg.poll_frac > 0 and poll_share(sp.top) >= self.cfg.poll_frac and _poll_count(sp.top) >= POLL_MIN_OF_ALL * sp.msgs:
+            self.notes.append(f"skipped: chat was answering a poll ({', '.join(str(t) for t, _ in sp.top[:3])})")
+            return None
         return sp

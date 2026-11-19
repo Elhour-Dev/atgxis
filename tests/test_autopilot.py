@@ -421,3 +421,13 @@ def test_the_page_script_is_valid_javascript():
         f.write_text(script, encoding="utf-8")
         r = subprocess.run([node, "--check", str(f)], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
+
+
+def test_done_is_neither_regret_nor_a_clip_to_post(rig):
+    for i, st in enumerate(["done", "done", "done", "trash", "keep", "keep"]):
+        posted_clip(rig, st, i)
+    metas = list(rig.store._metas())
+    assert rig.ap.regret(metas) == (1, 3)                                                     # freeing space is not a judgement
+    p = rig.clip(status="done")
+    assert all(a["action"] != "paused" for a in rig.tick(0))
+    assert rig.ap_state(p) is None and rig.tick(30) is not None and rig.provider.calls == []  # a done clip is never queued or posted

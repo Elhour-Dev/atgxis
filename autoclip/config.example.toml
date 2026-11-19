@@ -5,6 +5,7 @@
 mult = 2.0          # lower = more clips, higher = fewer/bigger (1.7 = very sensitive)
 min_users = 6       # at least this many DIFFERENT chatters in the window (raise to 12+ for big channels)
 warmup_s = 90       # time spent learning the channel's normal chat level before clipping
+poll_frac = 0.5     # skip spikes where chat is just answering a poll (numbers, yes/no, left/right). 0 = off
 
 # --- drafts and suggested trim ---
 cut_mode = "copy"       # "copy" = instant draft (recommended). "encode" = exact window but ~15 s of CPU per clip

@@ -33,6 +33,7 @@ class Config:
     max_active_s: int = 60      # force a clip split if a spike lasts this long
     cooldown_s: int = 20        # pause after a forced split
     raid_suppress_s: int = 90   # ignore spikes right after a raid
+    poll_frac: float = 0.5      # skip a spike when this share of its top messages are poll answers (numbers, yes/no, left/right); 0 = off
     chat_grace_s: float = 3.0   # wait this long for late chat messages (YouTube batches ~5s)
     # a loud moment (streamer screaming, game explosion) is a second signal: it lowers the chat threshold, never fires alone
     audio_assist: bool = True

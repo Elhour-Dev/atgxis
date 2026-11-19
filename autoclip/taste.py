@@ -178,20 +178,26 @@ def _read_log() -> list[dict]:
     return rows
 
 
+LABEL_RULES = 2                        # bump when labels() reads the same log differently (2: a Trash after your own post is a Keep)
 IMPLICIT = {"posted"}                  # you posted it yourself: a Keep, unless you decided explicitly
 
 
 def labels() -> list[dict]:
     """The decisions in force, oldest first: [{clip, label, src, t, s}]. The latest explicit decision per clip wins; an Undo removes it;
-    an implicit 'posted' only counts for a clip with no explicit decision."""
+    an implicit 'posted' only counts for a clip with no explicit decision. A Trash AFTER you posted the clip yourself was only to free
+    disk space (before the "Done" button existed), so it counts as a Keep."""
     explicit: dict[str, dict] = {}
     implicit: dict[str, dict] = {}
+    posted: set[str] = set()
     for r in _read_log():
         cid = r["clip"]
         if r.get("src") in IMPLICIT:
             if r.get("label") == 1 and r.get("s"):
                 implicit[cid] = r
+                posted.add(cid)
         elif r.get("label") in (0, 1) and r.get("s"):
+            if r["label"] == 0 and cid in posted:
+                r = {**r, "label": 1}
             explicit[cid] = r
         else:
             explicit.pop(cid, None)                           # Undo
@@ -205,6 +211,11 @@ def counts() -> dict:
     return {"total": len(ls), "keeps": keeps, "trashes": len(ls) - keeps}
 
 
+def posted_by_you(m: dict) -> bool:
+    """You posted this clip yourself (not the Autopilot): shared by you, or marked as posted by hand."""
+    return any(sh.get("actor", "you") == "you" and sh.get("status") in ("done", "draft") for sh in (m.get("shares") or {}).values())
+
+
 def import_existing(root: Path) -> int:
     """Decisions you made before learning existed are still in the clip files (Keep / Trash). Take them over once."""
     known = {r["clip"] for r in _read_log()}
@@ -214,8 +225,13 @@ def import_existing(root: Path) -> int:
             m = json.loads(p.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if m.get("id") and m["id"] not in known and m.get("status") in ("keep", "trash"):
-            record(m, 1 if m["status"] == "keep" else 0, "import", when=p.stat().st_mtime)
+        if m.get("id") and m["id"] not in known and m.get("status") in ("keep", "trash", "done"):
+            # a trashed clip you had posted yourself was trashed to free space, not because it was bad
+            mine = posted_by_you(m)
+            if m["status"] == "done" and not mine:
+                continue                                       # Done on an Autopilot-only post: no judgement of yours
+            good = m["status"] == "keep" or mine
+            record(m, 1 if good else 0, "import", when=p.stat().st_mtime)
             known.add(m["id"])
             n += 1
     return n
@@ -444,7 +460,7 @@ def train(rows: list[dict] | None = None) -> dict:
     rows = rows[-MAX_TRAIN:]
     keeps = sum(1 for r in rows if r["label"] == 1)
     m: dict = {"v": VERSION, "trained_at": round(time.time(), 1), "n": len(rows), "keeps": keeps, "trashes": len(rows) - keeps,
-               "log_lines": lines}
+               "log_lines": lines, "label_rules": LABEL_RULES}
     if len(rows) < EARLY_LABELS or min(keeps, len(rows) - keeps) < EARLY_PER_CLASS:
         m.update(state="none", reason=f"Keep or Trash at least {EARLY_LABELS} clips ({EARLY_PER_CLASS}+ of each) and it starts guessing.")
         _write_atomic(model_path(), m)
@@ -480,7 +496,8 @@ def model() -> dict | None:
 def is_stale() -> bool:
     """Has the decision log changed since the model was trained? (Exact: counts every line, so a flipped Keep -> Trash is noticed too.)"""
     lines = len(_read_log())
-    return lines > 0 and (model() or {}).get("log_lines") != lines
+    m = model() or {}
+    return lines > 0 and (m.get("log_lines") != lines or m.get("label_rules", 1) != LABEL_RULES)
 
 
 RETRAIN_DELAY_S = 1.0
