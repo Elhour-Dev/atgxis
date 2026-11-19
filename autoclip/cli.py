@@ -43,6 +43,11 @@ def diagnose_stream(messages: str, got_bytes: int, seconds: float, first_video_s
                        "channels without a Twitch login. The recorder waits such ads out; video missing during an ad cannot be clipped.")
         return out
     out = ["NO VIDEO arrived."]
+    if "found matching plugin" in low and "available streams" not in low and "no playable streams" not in low:
+        out.append("streamlink got STUCK asking Twitch about the channel (it never even listed the available streams), so this is not an "
+                   "ad or an offline channel: the connection to Twitch's servers stalled. Often temporary. Run the check again with a longer wait "
+                   "(--seconds 60); if it keeps happening, run it with --debug and send me the output, and test the connection: "
+                   "Test-NetConnection gql.twitch.tv -Port 443  and  Test-NetConnection usher.ttvnw.net -Port 443")
     if re.search(r"no playable streams|offline|not found|unable to find|could not find", low):
         out.append("Twitch reports the channel as offline (or the name is wrong). Open the channel in your browser to check.")
     if AD_WORDS.search(low):
@@ -74,7 +79,7 @@ def cmd_check(args) -> int:
         return 1
     ver = subprocess.run([exe, "--version"], capture_output=True, text=True, errors="replace").stdout.strip()
     print(f"{ver or 'streamlink (version unknown)'}\nTesting {label}: asking for {args.seconds:g} s of video (quality {cfg.quality}) ...")
-    proc = subprocess.Popen(streamlink_cmd(url, cfg.quality), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    proc = subprocess.Popen(streamlink_cmd(url, cfg.quality, "debug" if args.debug else "info"), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     got, lines, first = [0], [], [None]
 
     def pump_out():
@@ -107,7 +112,7 @@ def cmd_check(args) -> int:
     took = max(time.time() - t0, 0.5)
     msgs = "\n".join(lines)
     first_s = (first[0] - t0) if first[0] else None
-    print(f"\nstreamlink said:\n" + ("\n".join("  " + ln for ln in lines[-12:]) if lines else "  (nothing)"))
+    print(f"\nstreamlink said:\n" + ("\n".join("  " + ln for ln in lines[-(40 if args.debug else 12):]) if lines else "  (nothing)"))
     print(f"\nreceived {got[0] / 1e6:.2f} MB in {took:.0f} s" + (f", first video after {first_s:.0f} s" if first_s is not None else "") + "\n")
     verdict = diagnose_stream(msgs, got[0], took, first_s)
     print("\n".join(verdict))
@@ -358,6 +363,7 @@ def main(argv=None) -> int:
     k = sub.add_parser("check", help="test one channel: can streamlink get video from it on this PC right now?")
     k.add_argument("target", help="twitch name / twitch.tv link / youtube live link")
     k.add_argument("--seconds", type=float, default=20)
+    k.add_argument("--debug", action="store_true", help="show streamlink's detailed log (each web request), to see where it gets stuck")
     k.add_argument("--out")
     c = sub.add_parser("connect", help="guided setup for automatic posting to YouTube / Instagram / TikTok")
     c.add_argument("platform", nargs="?", choices=PLATFORM_CHOICES, help="open the guide for this platform (default: all)")

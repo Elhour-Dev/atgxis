@@ -129,6 +129,10 @@ def test_diagnose_stream_says_what_it_means():
     late = cli.diagnose_stream("[plugins.twitch][info] Will skip ad segments", 5_000_000, 45, first_video_s=31)
     assert late[0].startswith("OK") and "31 s" in late[1] and "ad" in late[1]
     assert any("403 Client Error: Forbidden" and "refuses access" in x for x in cli.diagnose_stream("403 Client Error: Forbidden for url", 0, 20))
+    stuck = cli.diagnose_stream("[cli][info] Found matching plugin twitch for URL https://www.twitch.tv/ishowspeed", 0, 20)   # a real check
+    assert any("STUCK" in x and "--seconds 60" in x and "gql.twitch.tv" in x for x in stuck)
+    listed = cli.diagnose_stream("[cli][info] Found matching plugin twitch for URL x\n[cli][info] Available streams: 720p60, 1080p60 (best)", 0, 20)
+    assert not any("STUCK" in x for x in listed)                    # got as far as the stream list: a different problem
     nothing = cli.diagnose_stream("", 0, 20)
     assert "No clear reason" in " ".join(nothing) and any("winget upgrade Streamlink" in x for x in nothing)
 
@@ -183,3 +187,14 @@ def test_check_waits_out_an_ad_break_and_reports_how_long_it_took(tmp_path, monk
     assert cli.main(["check", "kaicenat", "--seconds", "1", "--out", str(tmp_path / "c")]) == 0      # asked for 1 s, waited the ad out
     out = capsys.readouterr().out
     assert "Twitch is showing an ad first" in out and "first video after" in out and "OK: video arrives" in out
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="uses a shell script as a fake streamlink")
+def test_check_debug_asks_streamlink_for_its_detailed_log(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("AUTOCLIP_CONFIG_DIR", str(tmp_path / "cfg"))
+    exe = fake_streamlink(tmp_path, '[ "$1" = "--version" ] && { echo "streamlink 8.6.3"; exit 0; }\n'
+                                    'echo "args: $*" >&2\necho "[cli][info] Found matching plugin twitch for URL x" >&2\nsleep 3\n')
+    monkeypatch.setenv("PATH", f"{exe}{os.pathsep}{os.environ['PATH']}")
+    assert cli.main(["check", "ishowspeed", "--seconds", "1", "--debug", "--out", str(tmp_path / "c")]) == 1
+    out = capsys.readouterr().out
+    assert "--loglevel debug" in out and "STUCK" in out and "Test-NetConnection gql.twitch.tv" in out
