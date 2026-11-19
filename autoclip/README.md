@@ -104,8 +104,27 @@ one invalid or not-connected platform blocks the whole request (nothing is uploa
 unless you tick "post again", and each result is recorded.
 
 * **Share assistant** (no setup): opens each platform's upload page, selects the file, copies the caption; you press Post.
-* **Post directly to my connected accounts** (free, official APIs): uploads for you. Set up once under **🔗 Accounts** (about 5 minutes
-  per platform, instructions are inside that window). Logins are kept in `%APPDATA%\autoclip\accounts.json` on your PC only.
+* **Post directly to my connected accounts** (free, official APIs): uploads for you. Set up once with a guided window:
+  `python -m autoclip connect` (or `connect youtube` / `instagram` / `tiktok`), or press **🔗 Accounts** in the review page, or press the
+  **Connect ...** button that appears in a clip's Share box when a platform is missing. Logins are kept in `%APPDATA%\autoclip\accounts.json` on your PC only.
+
+### Connecting an account (what is easier now, and what cannot be)
+Every platform requires you to create a free developer app on your own account; no program can skip that. The window makes each step one click:
+* Numbered steps, each with a button that opens **the exact console page**, a **Copy** button for values you must paste into the platform
+  (TikTok's redirect address already contains this page's port), and tick boxes that remember how far you got.
+* **YouTube: drop the JSON file** Google lets you download for the OAuth client (Download JSON) instead of copying two long strings. A
+  "Web application" client, an API key, a service-account key, swapped boxes, stray spaces/quotes/line breaks or a pasted `Bearer ` prefix are
+  recognised and fixed or explained in words.
+* **Test connection** checks the saved login with the platform (posts nothing) and shows which account is connected (Instagram `@name`,
+  TikTok display name). `python -m autoclip doctor` lists which accounts are connected.
+* When Google/TikTok refuse a sign-in, the page you land on says what to change (for example "add your account under Audience > Test users"),
+  and **Something went wrong?** under each platform lists the usual errors with their fix.
+* If your browser blocks the sign-in tab, a link appears so you can open it yourself.
+
+Platform consoles change their wording often; if a step no longer matches what you see, the link still opens the right area and the
+Something-went-wrong list still applies. **Instagram caveat (not verified against a live account):** Meta's documentation says resumable Reel
+uploads are limited to apps using Facebook Login for Business and some sources say only Business (not Creator) accounts can publish through
+the API. If Instagram refuses the upload, use the Share assistant for Instagram.
 
 What each platform really allows (so there are no surprises):
 | | what happens | catch |

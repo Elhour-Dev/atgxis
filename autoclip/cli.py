@@ -48,6 +48,9 @@ def cmd_doctor(_args) -> int:
         filt = subprocess.run(["ffmpeg", "-hide_banner", "-filters"], capture_output=True, text=True).stdout
         print("captions (libass):", "OK" if " ass " in filt else "MISSING - install the full FFmpeg build (winget Gyan.FFmpeg has it)")
     print("faster-whisper:", "OK" if importlib.util.find_spec("faster_whisper") else "not installed (only for captions): pip install faster-whisper")
+    from . import accounts
+    have = [p for p in PLATFORM_CHOICES if accounts.connected(p)]
+    print("auto-posting accounts:", ", ".join(have) if have else "none connected (optional): python -m autoclip connect")
     print("\nAll required tools found." if ok else "\nFix the MISSING items above, then run doctor again.")
     return 0 if ok else 1
 
@@ -162,6 +165,19 @@ def cmd_review(args) -> int:
     return 0
 
 
+PLATFORM_CHOICES = ("youtube", "instagram", "tiktok")
+
+
+def cmd_connect(args) -> int:
+    """Open the review page straight on the Accounts window (guided setup for automatic posting)."""
+    from .review import serve
+    cfg = _load_cfg(args)
+    print("Opening the Accounts window" + (f" for {args.platform}" if args.platform else "") +
+          ". Follow the numbered steps there; press Ctrl+C here when you are done.")
+    serve(Path(cfg.out_dir), cfg, args.port, not args.no_browser, open_path="#connect=" + (args.platform or ""))
+    return 0
+
+
 def cmd_demo(args) -> int:
     """Synthetic video + synthetic chat: proves ffmpeg, cutting, detection and the review page work, offline."""
     import random
@@ -222,7 +238,12 @@ def main(argv=None) -> int:
     v.add_argument("--out")
     v.add_argument("--port", type=int, default=8765)
     v.add_argument("--no-browser", action="store_true")
+    c = sub.add_parser("connect", help="guided setup for automatic posting to YouTube / Instagram / TikTok")
+    c.add_argument("platform", nargs="?", choices=PLATFORM_CHOICES, help="open the guide for this platform (default: all)")
+    c.add_argument("--out")
+    c.add_argument("--port", type=int, default=8765)
+    c.add_argument("--no-browser", action="store_true")
     d = sub.add_parser("demo", help="offline self-test with fake video and chat")
     d.add_argument("--out")
     args = ap.parse_args(argv)
-    return {"doctor": cmd_doctor, "run": cmd_run, "review": cmd_review, "demo": cmd_demo}[args.cmd](args)
+    return {"doctor": cmd_doctor, "run": cmd_run, "review": cmd_review, "connect": cmd_connect, "demo": cmd_demo}[args.cmd](args)
