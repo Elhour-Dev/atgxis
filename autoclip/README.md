@@ -70,6 +70,11 @@ Rule of thumb: the limits are your download speed and disk, not the program. Add
 * **Disk.** A busy day can make hundreds of clips (a 1080p60 clip is about 40 MB as a draft plus 25 MB as 9:16). The program stops cutting, and
   says so in the status block and the log, when the clips folder passes `max_clips_gb` (20) or the drive has less than `min_free_gb` (3) free.
   Nothing is deleted for you. Raise the limit, or Trash clips in the review page and press "Delete trashed files".
+* **Chat drops are handled.** If the Twitch chat connection breaks (`twitch chat <name>: timed out (retry in Ns)` in the log), the program
+  reconnects by itself: quickly after a connection that had been healthy (the wait only grows while attempts keep failing), alternating between
+  Twitch's ports 6697 and 443, and it pings a quiet connection so a dead one is noticed within about 90 s. While chat is down the status
+  block says `CHAT RECONNECTING`: the video keeps recording, but spikes cannot be detected, and the channel's "normal" level is not
+  learned from that silence. When chat returns the log says `back after N s`. Occasional drops on Wi-Fi are normal; if they are constant, check the connection.
 * **An offline streamer** costs almost nothing: it is checked about once a minute and leaves no files behind. If chat spikes while there is no
   video, that is logged as "no video" (not a failed cut).
 * Measured on a synthetic run (2 streams, repeated spikes, 9:16 renders on): memory stayed flat (about 22 MB), threads and open files stayed
