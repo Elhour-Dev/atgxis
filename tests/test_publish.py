@@ -115,7 +115,8 @@ class H(BaseHTTPRequestHandler):
         FAKE.calls.append(("PUT", self.path))
         if self.path == "/yt/put/1":
             assert int(self.headers["Content-Length"]) == len(raw) > 0
-            return self.reply(200, {"id": "VID123", "status": {"privacyStatus": FAKE.yt_privacy}})
+            paid = getattr(FAKE, "yt_meta", {}).get("paidProductPlacementDetails") if getattr(FAKE, "yt_keeps_paid", True) else None
+            return self.reply(200, {"id": "VID123", "status": {"privacyStatus": FAKE.yt_privacy}, **({"paidProductPlacementDetails": paid} if paid else {})})
         if self.path == "/tt/put/1":
             assert self.headers["Content-Range"] == f"bytes 0-{len(raw) - 1}/{len(raw)}"
             return self.reply(201, {})
@@ -297,3 +298,28 @@ def test_accounts_api(world):
     assert code == 200 and not accounts.connected("instagram")
     assert call("/api/accounts/save", {"platform": "myspace", "values": {}})[0] == 400
     srv.shutdown()
+
+
+def test_a_paid_campaign_clip_declares_paid_promotion_where_the_api_allows(world):
+    connect_all()
+    FAKE.yt_meta = {}
+    j = job("youtube", world)
+    assert publish.youtube_upload(j).paid_flag is None and "paidProductPlacementDetails" not in FAKE.yt_meta     # normal clips: untouched
+    j.paid = True
+    r = publish.youtube_upload(j)
+    assert FAKE.yt_meta["paidProductPlacementDetails"] == {"hasPaidProductPlacement": True} and r.paid_flag == "set"
+    FAKE.yt_keeps_paid = False                                                       # YouTube did not confirm it: say so, never claim it
+    try:
+        assert publish.youtube_upload(j).paid_flag.startswith("not set")
+    finally:
+        FAKE.yt_keeps_paid = True
+    t = job("tiktok", world)
+    t.paid = True
+    assert "draft mode" in publish.tiktok_upload(t).paid_flag and "brand_content_toggle" not in str(FAKE.tt_init[1])
+    accounts.update("tiktok", mode="direct")
+    FAKE.tt_state = "PUBLISH_COMPLETE"
+    assert "private" in publish.tiktok_upload(t).paid_flag                           # TikTok does not allow it on "only me" posts
+    accounts.update("tiktok", privacy="PUBLIC_TO_EVERYONE")
+    r = publish.tiktok_upload(t)
+    info = FAKE.tt_init[1]["post_info"]
+    assert r.paid_flag == "set" and info["brand_content_toggle"] is True and info["brand_organic_toggle"] is False

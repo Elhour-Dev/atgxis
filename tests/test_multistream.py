@@ -200,17 +200,20 @@ def test_three_streams_spike_together_every_clip_is_saved_while_encodes_are_busy
         assert _wait(lambda: lanes.encodes.running == 1, 10)
         assert lanes.encodes.waiting == 2                        # the other two renders are queued, not lost
         metas = sorted(out.rglob("*.clip.json"))
-        assert len(metas) == 3 and all((m.parent / json.loads(m.read_text())["file"]).exists() for m in metas)
+        assert len(metas) == 3 and all((m.parent / json.loads(m.read_text(encoding="utf-8"))["file"]).exists() for m in metas)
         # you press Keep in the review page while your clip's render is still queued ...
         victim = metas[0]
-        data = json.loads(victim.read_text())
+        data = json.loads(victim.read_text(encoding="utf-8"))
         data["status"] = "keep"
-        victim.write_text(json.dumps(data))
+        victim.write_text(json.dumps(data), encoding="utf-8")
         gate.set()
         assert _wait(lambda: sum(w.stats["verticals"] for w in ws) == 3, 30), [w.stats for w in ws]
         # ... and the render finishing must not undo it, and must add its export to the record
-        after = json.loads(victim.read_text())
+        after = json.loads(victim.read_text(encoding="utf-8"))
         assert after["status"] == "keep" and len(after["exports"]) == 1 and after["exports"][0]["vertical"] is True
+        from autoclip import autopilot
+        fresh = json.loads(metas[1].read_text(encoding="utf-8"))
+        assert not autopilot._touched(fresh), "a clip nobody touched must not count as yours (or the score rules never trash)"
         assert "streams running" in status_block(ws, lanes, cfg)
     finally:
         gate.set()
@@ -219,7 +222,8 @@ def test_three_streams_spike_together_every_clip_is_saved_while_encodes_are_busy
             w.join(timeout=60)
         lanes.shutdown()
     assert not any((tmp_path / "buf").iterdir()), "buffers must be deleted on stop"
-    assert subprocess.run(["pgrep", "-f", "testsrc2=size=320x180"], capture_output=True).returncode != 0, "ffmpeg leaked"
+    from clipfactory import ffmpeg_leaked
+    assert not ffmpeg_leaked("testsrc2=size=320x180"), "ffmpeg leaked"
 
 
 @needs_ffmpeg

@@ -53,7 +53,9 @@ check its result yourself.)
 | `captions.py`, `describe.py` | Burned-in captions; title / description suggestions |
 | `review.py`, `autopilot_page.py` | The local review web page (one big Python string, so no backslashes in `review.PAGE`) |
 | `share.py`, `publish.py`, `accounts.py`, `zernio.py` | Sharing and posting: share assistant, official APIs, OAuth logins, Zernio "Quick connect" |
+| `campaigns.py`, `campaigns_page.py` | Paid clipping campaigns: rules file, disclosure / layout / text, pre-post check, post log, earnings; the Campaigns window |
 | `taste.py`, `autopilot.py` | Learns Keep/Trash and posts the clips it is sure about, with safety rules |
+| `style.py` | Learns how you trim, caption, title and post (examples.jsonl -> learned.json, + taught.json from the teacher skill) |
 | `disk.py`, `power.py` | Disk guards and stale-buffer cleanup; keep-awake for long unattended runs |
 
 `docs/` is the GitHub Pages site (privacy policy, terms of service, TikTok app review files). The TikTok verification `.txt` file

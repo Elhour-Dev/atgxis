@@ -16,6 +16,7 @@ from pathlib import Path
 
 from . import accounts as acc
 from .accounts import ApiError, api_message, as_json, http
+from .campaigns import FLAG_HELP
 from .share import PLATFORMS, Job, Provider, Result
 
 UPLOAD_TIMEOUT = 900
@@ -38,8 +39,15 @@ def youtube_upload(job: Job) -> Result:
     meta = {"snippet": {"title": job.title[:100], "description": job.text[:5000], "categoryId": "20"},
             "status": {"privacyStatus": privacy, "selfDeclaredMadeForKids": False}}
     auth = {"Authorization": f"Bearer {token}"}
-    st, hdr, raw = http("POST", acc.ENDPOINTS["yt_upload"] + "?uploadType=resumable&part=snippet,status",
-                        headers={**auth, "X-Upload-Content-Type": "video/mp4", "X-Upload-Content-Length": str(size)}, body=meta, retries=2)
+    parts = "snippet,status"
+    if job.paid:                                           # a paid campaign clip: declare the paid promotion
+        parts += ",paidProductPlacementDetails"
+        meta["paidProductPlacementDetails"] = {"hasPaidProductPlacement": True}
+    up_hdr = {**auth, "X-Upload-Content-Type": "video/mp4", "X-Upload-Content-Length": str(size)}
+    st, hdr, raw = http("POST", acc.ENDPOINTS["yt_upload"] + "?uploadType=resumable&part=" + parts, headers=up_hdr, body=meta, retries=2)
+    if job.paid and st == 400:                             # the paid field may not be accepted: never let it block the upload
+        meta.pop("paidProductPlacementDetails")            # YouTube would not take the flag: upload anyway, you tick it in Studio
+        st, hdr, raw = http("POST", acc.ENDPOINTS["yt_upload"] + "?uploadType=resumable&part=snippet,status", headers=up_hdr, body=meta, retries=2)
     if st != 200 or not hdr.get("location"):
         msg = api_message(st, raw)
         if "quota" in msg.lower():
@@ -53,11 +61,14 @@ def youtube_upload(job: Job) -> Result:
         raise ApiError("YouTube upload failed: " + api_message(st, raw))
     vid = d["id"]
     final = (d.get("status") or {}).get("privacyStatus", privacy)
+    flag = None
+    if job.paid:                                           # "set" only when YouTube confirms it
+        flag = "set" if (d.get("paidProductPlacementDetails") or {}).get("hasPaidProductPlacement") is True else FLAG_HELP["youtube"]
     if privacy == "public" and final != "public":
         return Result(True, "draft", "Uploaded, but YouTube kept it PRIVATE: videos from new API projects are locked private until Google audits "
                       "the project. Open YouTube Studio, edit this video and set it to Public (title and description are already filled in).",
-                      f"https://studio.youtube.com/video/{vid}/edit")
-    return Result(True, "done", f"Published as a {final} Short.", f"https://www.youtube.com/shorts/{vid}")
+                      f"https://studio.youtube.com/video/{vid}/edit", flag)
+    return Result(True, "done", f"Published as a {final} Short.", f"https://www.youtube.com/shorts/{vid}", flag)
 
 
 # ---------------------------------------------------------------------------------------------------- Instagram
@@ -127,6 +138,13 @@ def tiktok_upload(job: Job) -> Result:
                                  "disable_duet": False, "disable_comment": False, "disable_stitch": False}, "source_info": src}
     else:
         init_url, payload = api + "/post/publish/inbox/video/init/", {"source_info": src}
+    flag = None
+    if job.paid:                                           # Content disclosure > Paid partnership: only a direct, non-private post can carry it
+        if mode == "direct" and a.get("privacy", "SELF_ONLY") != "SELF_ONLY":
+            payload["post_info"].update(brand_content_toggle=True, brand_organic_toggle=False)
+            flag = "set"
+        else:
+            flag = FLAG_HELP["tiktok"] + (" (draft mode cannot carry it)" if mode != "direct" else " (not sent on private posts)")
     st, _, raw = http("POST", init_url, headers=auth, body=payload, retries=2)
     d = as_json(raw)
     err = d.get("error") or {}
@@ -152,12 +170,12 @@ def tiktok_upload(job: Job) -> Result:
         state = data.get("status", "")
         if state == "SEND_TO_USER_INBOX":
             return Result(True, "draft", "Uploaded to your TikTok inbox. Open the TikTok app: the video is waiting in your notifications. "
-                          "Write the caption (it is on your clipboard) and press Post.")
+                          "Write the caption (it is on your clipboard) and press Post.", paid_flag=flag)
         if state == "PUBLISH_COMPLETE":
             vis = a.get("privacy", "SELF_ONLY")
             return Result(True, "done" if vis != "SELF_ONLY" else "draft",
                           "Posted on TikTok." if vis != "SELF_ONLY" else "Posted, but only visible to you (TikTok restricts unaudited apps). "
-                          "Open it in TikTok and change who can watch.")
+                          "Open it in TikTok and change who can watch.", paid_flag=flag)
         if state == "FAILED":
             raise ApiError("TikTok could not process the video: " + data.get("fail_reason", "unknown reason"))
         if waited > POLL_MAX_S:

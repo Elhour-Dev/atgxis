@@ -1,6 +1,8 @@
 """Local review page: ranked clips with players, keep / trash / make-vertical buttons. Binds to 127.0.0.1 only."""
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import mimetypes
 import re
@@ -15,7 +17,7 @@ from .config import Config
 from .captions import CaptionsUnavailable, build_ass, cached_words, transcribe, words_in_window
 from . import layout as lay
 import html
-from . import accounts, autopilot, autopilot_page, publish, settings, share, taste, zernio      # noqa: F401  (publish / zernio register the 'direct' / 'auto' sharing methods)
+from . import accounts, autopilot, autopilot_page, campaigns, campaigns_page, publish, settings, share, style, taste, zernio      # noqa: F401  (publish / zernio register the 'direct' / 'auto' sharing methods)
 from .cutter import export_clip, grab_frame, probe_size
 from .describe import suggest as suggest_description
 from .facecam import FacecamUnavailable, detect_facecam
@@ -25,123 +27,252 @@ from .layout import LayoutError, LayoutStore
 PAGE = """<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
 <title>Clip review</title>
 <style>
-:root{color-scheme:light dark;--bg:#fff;--fg:#1a1a1a;--card:#f4f4f6;--mut:#666;--acc:#6d28d9}
-@media(prefers-color-scheme:dark){:root{--bg:#121214;--fg:#eee;--card:#1d1d21;--mut:#9a9aa3}}
-body{margin:0;padding:16px;background:var(--bg);color:var(--fg);font:15px system-ui,sans-serif}
-header{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:16px}
-h1{font-size:20px;margin:0 12px 0 0} select,button,input[type=number]{font:inherit;padding:6px 10px;border-radius:8px;border:1px solid #8884;background:var(--card);color:var(--fg)}
-button{cursor:pointer} button.primary{background:var(--acc);color:#fff;border-color:var(--acc)} button:disabled{opacity:.6;cursor:wait}
-input[type=number]{width:74px}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));gap:16px}
-.card{background:var(--card);border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:8px}
-.card.keep{outline:2px solid #16a34a}.card.trash{opacity:.45}.card.done{opacity:.8}
-video{width:100%;border-radius:8px;background:#000} .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-.score{font-weight:700;color:var(--acc);font-size:18px}.mut{color:var(--mut);font-size:13px}
-.chat{font-size:13px;background:#8881;border-radius:8px;padding:6px 8px;max-height:60px;overflow:auto}
-.trim{background:#8881;border-radius:8px;padding:8px;display:flex;flex-direction:column;gap:6px}
-label{display:flex;gap:4px;align-items:center;font-size:14px}
+:root{color-scheme:light dark;--bg:#f5f5f7;--fg:#18181b;--card:#fff;--soft:#f0f0f3;--line:#e3e3e8;--mut:#6b6b76;--acc:#6d28d9;--acc2:#ede9fe;
+  --good:#15803d;--goodbg:#dcfce7;--bad:#b91c1c;--badbg:#fee2e2;--warn:#a16207;--warnbg:#fef3c7;--r:12px}
+@media(prefers-color-scheme:dark){:root{--bg:#0f0f12;--fg:#ececf1;--card:#1a1a1f;--soft:#232329;--line:#2e2e36;--mut:#9a9aa6;--acc:#8b5cf6;--acc2:#2e2350;
+  --good:#4ade80;--goodbg:#143323;--bad:#f87171;--badbg:#3a1717;--warn:#facc15;--warnbg:#3a3010}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.4 system-ui,-apple-system,Segoe UI,sans-serif}
+main{padding:16px;max-width:1600px;margin:0 auto}
+header.top{position:sticky;top:0;z-index:5;background:var(--bg);border-bottom:1px solid var(--line);padding:10px 16px}
+header .bar,header .sub{display:flex;gap:10px;flex-wrap:wrap;align-items:center;max-width:1568px;margin:0 auto}
+header .sub{margin-top:8px;font-size:13px}header .sub select{padding:4px 8px;font-size:13px}
+h1{font-size:19px;margin:0 8px 0 0;letter-spacing:-.01em}
+.tabs{display:flex;gap:4px;flex-wrap:wrap;background:var(--soft);padding:3px;border-radius:10px}
+.tab{border:0;background:transparent;padding:6px 12px;border-radius:8px;font-weight:500}
+.tab .n{display:inline-block;min-width:20px;padding:0 6px;border-radius:999px;background:var(--line);font-size:12px;text-align:center;margin-left:2px}
+.tab.on{background:var(--card);box-shadow:0 1px 3px #0002}.tab.on .n{background:var(--acc);color:#fff}
+.grow{flex:1}
+select,button,input[type=number],input[type=text],textarea{font:inherit;color:var(--fg)}
+select,button{padding:7px 12px;border-radius:9px;border:1px solid var(--line);background:var(--card);cursor:pointer}
+button:hover{border-color:var(--mut)} button:disabled{opacity:.6;cursor:wait}
+button:focus-visible,select:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+button.primary{background:var(--acc);color:#fff;border-color:var(--acc);font-weight:600}
+button.good{background:var(--goodbg);color:var(--good);border-color:transparent;font-weight:600}
+header.top{transition:padding .15s}header.top.compact{padding-top:6px;padding-bottom:6px;box-shadow:0 2px 10px #0002}header.top.compact .sub{display:none}
+header.top.compact h1{font-size:16px}header.top.compact .tab{padding:4px 10px}header.top.compact .bar>button,header.top.compact .menu>button{padding:5px 10px}
+button.danger{color:var(--bad);border-color:var(--bad);background:transparent}
+button.sm{padding:4px 10px;font-size:13px;border-radius:8px}
+input[type=number]{width:78px;padding:5px 8px;border-radius:8px;border:1px solid var(--line);background:var(--card)}
+.menu{position:relative}.menu-list{position:absolute;right:0;top:calc(100% + 6px);background:var(--card);border:1px solid var(--line);border-radius:10px;padding:6px;display:flex;flex-direction:column;gap:2px;min-width:230px;box-shadow:0 8px 24px #0003;z-index:6}
+.menu-list[hidden]{display:none}.menu-list button{border:0;text-align:left;background:transparent;padding:8px 10px}.menu-list button:hover{background:var(--soft)}
+.dot::after{content:'';display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--warn);margin-left:6px;vertical-align:middle}
+.keys{color:var(--mut)} kbd{font:11px ui-monospace,monospace;border:1px solid var(--line);border-bottom-width:2px;border-radius:5px;padding:0 5px;margin-left:6px;background:var(--soft);color:var(--mut)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(380px,100%),1fr));gap:16px;align-items:start}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:14px;display:flex;flex-direction:column;gap:10px;outline:none;transition:box-shadow .15s,border-color .15s}
+.card:focus-within,.card:focus{border-color:var(--acc);box-shadow:0 0 0 3px var(--acc2)}
+.card.keep{border-left:4px solid var(--good)}.card.trash{opacity:.6}.card.trash:focus-within,.card.trash:focus{opacity:1}
+.head{display:flex;gap:10px;align-items:center}.htx{flex:1;min-width:0}
+.htitle{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.score{flex:none;width:42px;height:42px;border-radius:10px;background:var(--acc2);color:var(--acc);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:17px}
+.pill{flex:none;font-size:12px;font-weight:600;padding:3px 10px;border-radius:999px;background:var(--soft)}
+.pill.keep{background:var(--goodbg);color:var(--good)}.pill.trash{background:var(--badbg);color:var(--bad)}
+video{width:100%;border-radius:10px;background:#000;display:block}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.mut{color:var(--mut);font-size:13px}.lbl{font-size:12px;font-weight:600;color:var(--mut);text-transform:uppercase;letter-spacing:.04em}
+.trimbox{display:flex;flex-direction:column;gap:8px}
+.track{position:relative;height:30px;border-radius:8px;background:var(--soft);cursor:pointer;touch-action:none;margin:0 8px}
+.track .sel{position:absolute;top:0;bottom:0;background:var(--acc2);border-top:3px solid var(--acc);border-bottom:3px solid var(--acc)}
+.track .hd{position:absolute;top:-3px;bottom:-3px;width:14px;margin-left:-7px;border-radius:5px;background:var(--acc);cursor:ew-resize;touch-action:none}
+.track .hd::after{content:'';position:absolute;left:5px;right:5px;top:9px;bottom:9px;border-left:2px solid #fff8;border-right:2px solid #fff8}
+.track .moment{position:absolute;top:2px;bottom:2px;width:2px;margin-left:-1px;background:var(--warn);pointer-events:none}
+.track .ph{position:absolute;top:0;bottom:0;width:2px;margin-left:-1px;background:var(--fg);opacity:.7;pointer-events:none}
+.tlab b{font-variant-numeric:tabular-nums}
+details.fine{background:none;padding:0}details.fine>summary{font-size:13px;color:var(--mut)}details.fine .row{margin-top:6px}
+.info{display:flex;flex-direction:column;gap:6px}
+.tags{display:flex;gap:6px;flex-wrap:wrap}.tag{font-size:12px;padding:2px 8px;border-radius:6px;background:var(--soft)}
+.decide{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding-top:10px;border-top:1px solid var(--line)}
+button.big{padding:9px 18px;font-weight:600;border-radius:10px}
+button.big.good{background:#16a34a;border-color:#16a34a;color:#fff}button.big.bad{background:var(--badbg);border-color:transparent;color:var(--bad)}
+button.big kbd{background:#0002;border-color:#0003;color:inherit}
+a{color:var(--acc)}a.chan{margin-left:auto;font-size:13px}a.file{font-size:13px}
+details.stage{background:var(--soft);border-radius:10px;padding:0}
+details.stage>summary{display:flex;gap:10px;align-items:center;padding:9px 12px;cursor:pointer;list-style:none;font-size:14px}
+details.stage>summary::-webkit-details-marker{display:none}
+details.stage>summary::after{content:'▸';margin-left:6px;color:var(--mut)}details.stage[open]>summary::after{content:'▾'}
+details.stage .num{flex:none;width:22px;height:22px;border-radius:50%;background:var(--line);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700}
+details.stage.ok .num{background:var(--good);color:#fff}
+details.stage .st{margin-left:auto;color:var(--mut);font-size:13px;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60%}
+details.stage.locked>summary{cursor:default;opacity:.6}details.stage.locked>summary::after{content:''}
+.sbody{padding:4px 12px 12px;display:flex;flex-direction:column;gap:8px}.sbody>button{align-self:flex-start}
+.sbody input[type=text],.sbody textarea{width:100%;padding:8px;border-radius:8px;border:1px solid var(--line);background:var(--card)}
+.form2{display:grid;grid-template-columns:auto 1fr;gap:6px 10px;align-items:center}.form2 select{min-width:0;width:100%}
+label{display:flex;gap:6px;align-items:center;font-size:14px}label.plat{padding:4px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card)}
+.empty{grid-column:1/-1;text-align:center;padding:60px 16px;display:flex;flex-direction:column;gap:6px}
+button.more{grid-column:1/-1;justify-self:center}
+.note{font-size:13px;white-space:pre-wrap}.note.bad{color:var(--bad)}.note.good{color:var(--good)}.note.warn{color:var(--warn);background:var(--warnbg);padding:6px 8px;border-radius:8px}
+.hint{font-size:13px;color:var(--mut)}
+video.vert{max-height:360px;width:auto;max-width:100%;align-self:flex-start}
+.chat{font-size:13px;background:var(--soft);border-radius:8px;padding:6px 8px;max-height:60px;overflow:auto}
 .modal{position:fixed;inset:0;background:#000b;display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:16px;z-index:10}
-.mbox{background:var(--bg);border-radius:14px;padding:14px;max-width:1180px;width:100%;display:flex;flex-direction:column;gap:10px}
+.mbox{background:var(--card);border-radius:14px;padding:16px;max-width:1180px;width:100%;display:flex;flex-direction:column;gap:10px}
+.mbox h2{margin:0 0 4px;font-size:19px}
 .mcols{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-start}
 canvas{max-width:100%;border-radius:8px;touch-action:none;cursor:crosshair;background:#000}
 .pv{height:560px;max-width:100%;border-radius:8px;background:#000;object-fit:contain}
-.hint{font-size:13px;color:var(--mut)}
-video.vert{max-height:360px;width:auto;align-self:flex-start}
 .pw{position:relative;height:560px;aspect-ratio:9/16;background:#000;border-radius:8px;overflow:hidden;flex:none}
 .pvimg{position:absolute;inset:0;width:100%;height:100%;object-fit:fill;visibility:hidden}
 .capbox{position:absolute;border:2px dashed #22c55e;background:#22c55e22;display:flex;align-items:center;justify-content:center;color:#fff;font:800 14px Arial,sans-serif;text-align:center;cursor:move;touch-action:none;overflow:hidden;box-sizing:border-box;text-shadow:0 0 4px #000,0 0 4px #000}
 .caph{position:absolute;right:0;bottom:0;width:14px;height:14px;background:#22c55e;cursor:nwse-resize}
-.acc{background:#8881;border-radius:10px;padding:10px;display:flex;flex-direction:column;gap:6px}
-.acc input[type=text],.acc input[type=password]{padding:6px;border-radius:6px;border:1px solid #8884;background:var(--bg);color:var(--fg)}
+.acc{background:var(--soft);border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:6px}
+.acc input[type=text],.acc input[type=password]{padding:6px;border-radius:6px;border:1px solid var(--line);background:var(--card);color:var(--fg)}
 .acc ol{margin:4px 0 4px 18px;padding:0;font-size:13px;color:var(--mut)}
 .steps{margin:4px 0;padding:0;list-style:none;display:flex;flex-direction:column;gap:8px}
 .steps li{display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap;font-size:13px}.steps li.done .t{text-decoration:line-through;opacity:.55}
-.steps .t{flex:1 1 320px}a.btn{font:inherit;font-size:13px;padding:4px 10px;border-radius:8px;border:1px solid #8884;background:var(--card);color:var(--fg);text-decoration:none;white-space:nowrap}
-.chip{font-size:12px;padding:2px 10px;border-radius:999px;background:#8882}.chip.ok{background:#16a34a33}
-.drop{border:2px dashed #8886;border-radius:10px;padding:12px;text-align:center;font-size:13px}.drop.over{border-color:var(--acc);background:#6d28d922}
-code.cp{font:12px ui-monospace,monospace;background:#8882;border-radius:6px;padding:2px 6px;word-break:break-all}
-.note{font-size:13px;white-space:pre-wrap}.note.bad{color:#dc2626}.note.good{color:#16a34a}
-pre.share{white-space:pre-wrap;font:12px/1.4 system-ui;background:#8881;border-radius:6px;padding:6px;margin:4px 0;max-height:120px;overflow:auto}
-details{background:#8881;border-radius:8px;padding:6px 8px}summary{cursor:pointer;font-size:14px}
-details input[type=text],details input[type=password],details textarea{width:100%;box-sizing:border-box;font:inherit;padding:6px;border-radius:6px;border:1px solid #8884;background:var(--bg);color:var(--fg);margin-top:6px}
+.steps .t{flex:1 1 320px}a.btn{font:inherit;font-size:13px;padding:4px 10px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--fg);text-decoration:none;white-space:nowrap}
+.chip{font-size:12px;padding:2px 10px;border-radius:999px;background:var(--soft)}.chip.ok{background:var(--goodbg);color:var(--good)}
+.drop{border:2px dashed var(--line);border-radius:10px;padding:12px;text-align:center;font-size:13px}.drop.over{border-color:var(--acc);background:var(--acc2)}
+code.cp{font:12px ui-monospace,monospace;background:var(--soft);border-radius:6px;padding:2px 6px;word-break:break-all}
+pre.share{white-space:pre-wrap;font:12px/1.4 system-ui;background:var(--soft);border-radius:6px;padding:6px;margin:4px 0;max-height:120px;overflow:auto}
+details{background:var(--soft);border-radius:8px;padding:6px 8px}summary{cursor:pointer;font-size:14px}
+details input[type=text],details input[type=password],details textarea{width:100%;box-sizing:border-box;font:inherit;padding:6px;border-radius:6px;border:1px solid var(--line);background:var(--card);color:var(--fg);margin-top:6px}
+@media(max-width:600px){main{padding:10px}header.top{position:static;padding:8px 10px}.keys{display:none}h1{font-size:17px}.tab{padding:5px 8px;font-size:14px}.card{padding:12px}}
 </style>
-<header><h1>Clip review</h1>
-<select id=f><option value=new>To review</option><option value=keep>Kept</option><option value=trash>Trash</option><option value=done>Done (posted, files freed)</option><option value=all>All</option></select>
-<select id=s><option value=score>Best score first</option><option value=created>Newest first</option><option value=ap>Autopilot pick first</option></select>
-<button id=folders>📁 Folders</button><button id=quick class=primary title="Post to Instagram + TikTok with one free key">⚡ Quick connect</button><button id=accts title="YouTube and advanced: your own developer apps">🔗 Accounts</button><button id=ap title="Learns which clips you keep and can post the good ones for you">🤖 Autopilot</button><button id=purge>Delete trashed files</button><span class=mut id=count></span></header>
-<div class=grid id=g></div>
+<header class=top><div class=bar><h1>Clip review</h1><nav class=tabs id=tabs></nav><span class=grow></span>
+<button id=upd class="sm good" hidden></button><div class=menu><button id=layoutBtn title="How 9:16 clips are built: where the webcam and the game go, per streamer">📐 Layout</button><div class=menu-list id=layoutList hidden></div></div><div class=menu><button id=setupBtn title="Folders and posting accounts">⚙ Setup ▾</button><div class=menu-list id=setupList hidden>
+<button id=quick title="Post to Instagram + TikTok with one free key">⚡ Quick connect (Instagram + TikTok)</button><button id=accts title="YouTube and advanced: your own developer apps">🔗 Accounts (YouTube, advanced)</button><button id=folders>📁 Folders</button></div></div>
+<button id=cpBtn title="Paid clipping campaigns">💰 Campaigns <span class=n id=cpN hidden></span></button><button id=ap class=primary title="Learns which clips you keep and can post the good ones for you">🤖 Autopilot</button></div>
+<div class=sub><select id=s title="Order"><option value=score>Best score first</option><option value=created>Newest first</option><option value=ap>Autopilot pick first</option></select><span class=mut id=count></span><span class=grow></span><span class=keys>Keys: <kbd>K</kbd> keep <kbd>T</kbd> trash <kbd>U</kbd> undo <kbd>←</kbd><kbd>→</kbd> next clip <kbd>Space</kbd> play</span><button id=purge class="danger sm" hidden>Delete trashed files</button></div></header>
+<main><div class=grid id=g></div></main>
 <script>
-let clips=[],shown=30,sig='',shareInfo={providers:[],platforms:{}};const openPost=new Map(),openShare=new Map(),NL=String.fromCharCode(10);const trims=new Map();const exUi=new Map(),exPending=new Set();const g=document.getElementById('g');
+let clips=[],shown=30,sig='',shareInfo={providers:[],platforms:{}};const openSt=new Map(),NL=String.fromCharCode(10);const trims=new Map();const exUi=new Map(),exPending=new Set();const g=document.getElementById('g');
 const enc=id=>id.split('/').map(encodeURIComponent).join('/');
 const fmt=t=>Math.floor(t/60)+':'+String(Math.floor(t%60)).padStart(2,'0');
 const fileUrl=(c,f)=>'/files/'+enc(c.dir)+'/'+encodeURIComponent(f);
 function el(t,c,x){const e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e}
 async function load(force){
   const next=await (await fetch('/api/clips')).json();
-  const ns=JSON.stringify(next.map(c=>[c.id,c.status,(c.exports||[]).length,c.shares||null,c.res?c.res[1]:0,c.taste?c.taste.p:null,c.autopilot?c.autopilot.state:null]));
-  const playing=[...document.querySelectorAll('video')].some(v=>!v.paused);
-  clips=next;if(ns!==sig&&(force||!playing)){sig=ns;render()}
+  const ns=sigOf(next);
+  const before=shownIds,wasBusy=clips.filter(exBusy).map(c=>c.id);clips=next;
+  const finished=wasBusy.some(id=>!exBusy(next.find(c=>c.id===id)));      // your own export just finished: show it now
+  if(ns===sig){paintUpd(0)}
+  else if(force||finished||!userBusy())render()
+  else paintUpd(next.filter(c=>!before.has(c.id)).length||-1)
   for(const id of exUi.keys())paintEx(id)}                // buttons follow the SERVER state, even when a playing video holds back the redraw
+let lastAct=0,shownIds=new Set();for(const ev of ['pointerdown','keydown','wheel','input'])document.addEventListener(ev,()=>{lastAct=Date.now()},{capture:true,passive:true});
+function userBusy(){                                    // you are working: do not redraw under your hands, offer it instead
+  const ae=document.activeElement,tag=ae?ae.tagName:'';
+  return Date.now()-lastAct<30000||['INPUT','TEXTAREA','SELECT'].includes(tag)||!!document.querySelector('.modal')||[...document.querySelectorAll('video')].some(v=>!v.paused)}
+function paintUpd(n){const b=document.getElementById('upd');b.hidden=!n;b.textContent=n>0?n+' new clip'+(n>1?'s':'')+' · Show':'Updates ready · Show'}
 const exBusy=c=>c&&c.export_job&&(c.export_job.state==='queued'||c.export_job.state==='encoding');
 function paintEx(id){
   const u=exUi.get(id);if(!u)return;const c=clips.find(x=>x.id===id),j=c&&c.export_job;
   const busy=exPending.has(id)||exBusy(c);
-  u.ex.disabled=busy;u.ex.textContent=busy?((j&&j.state==='encoding')?'Encoding…':'Queued…'):'Export clip';
+  u.ex.disabled=busy;u.ex.textContent=busy?((j&&j.state==='encoding')?'Encoding…':'Queued…'):'Export clip';if(u.st)u.st.textContent=busy?((j&&j.state==='encoding')?'encoding…':'queued…'):(!busy&&j&&j.state==='error'?'export failed':u.base);
   u.note.replaceChildren();u.note.style.display='none';
   if(!busy&&j&&j.state==='error'){u.note.style.display='';u.note.append('Export failed: '+j.message+' ');
     const d=el('button',null,'Dismiss');d.onclick=async()=>{await post('/api/export/dismiss',{id});await load(false)};u.note.append(d)}}
 function numInput(v,on){const i=el('input');i.type='number';i.step='0.1';i.min='0';i.value=v;i.oninput=()=>on(parseFloat(i.value));return i}
+const LABEL={new:'To review',keep:'Kept',trash:'Trash',done:'Done',all:'All'};let filter='new',cur=null;
+function ago(iso){const s=(Date.now()-new Date(iso).getTime())/1000;if(!(s>=0))return String(iso).replace('T',' ');if(s<90)return 'just now';
+  if(s<3600)return Math.round(s/60)+' min ago';if(s<86400)return Math.round(s/3600)+' h ago';return Math.round(s/86400)+' d ago'}
+function paintTabs(){const tabs=document.getElementById('tabs'),n={all:clips.length};for(const c of clips)n[c.status]=(n[c.status]||0)+1;tabs.replaceChildren();
+  for(const k of ['new','keep','trash','done','all']){const b=el('button','tab'+(k===filter?' on':''));b.append(LABEL[k]+' ',el('span','n',String(n[k]||0)));
+    b.onclick=()=>{filter=k;shown=30;cur=null;render()};tabs.append(b)}
+  document.getElementById('purge').hidden=filter!=='trash'||!n.trash}
+function head(c){const h=el('div','head'),sc=el('div','score',String(Math.round(c.score)));sc.title='Clip score: how much bigger the chat reaction was than normal';
+  const tx=el('div','htx'),t2=el('div','mut',c.channel+' · '+ago(c.created)+(c.duration_s&&c.status!=='done'?' · '+fmt(c.duration_s)+' draft':''));t2.title=String(c.created).replace('T',' ');
+  tx.append(el('div','htitle',(c.description||{}).title||c.channel),t2);h.append(sc,tx);
+  if(c.status!=='new')h.append(el('span','pill '+c.status,{keep:'Kept',trash:'Trashed',done:'Posted · files freed'}[c.status]||c.status));return h}
+function stage(c,key,num,title,state,ok,body,locked){
+  const d=el('details','stage'+(ok?' ok':'')+(locked?' locked':''));d.open=!locked&&!!openSt.get(c.id+key);d.ontoggle=()=>openSt.set(c.id+key,d.open);
+  const s=el('summary'),stx=el('span','st',state);s.append(el('span','num',ok?'✓':num),el('b',null,title),stx);d.append(s);
+  if(locked)s.onclick=e=>e.preventDefault();else d.append(body);d.stx=stx;return d}
+async function setStatus(c,st){if(st===c.status)return;
+  const cards=[...g.querySelectorAll('.card')],i=cards.findIndex(x=>x.dataset.id===c.id),leaves=filter!=='all'&&filter!==st;
+  const nx=leaves?(cards[i+1]||cards[i-1]):cards[i];cur=nx?nx.dataset.id:null;
+  if(await post('/api/status',{id:c.id,status:st}))await load(true);focusCur()}
+function focusCur(scroll){const k=[...g.querySelectorAll('.card')].find(x=>x.dataset.id===cur);if(k){k.focus({preventScroll:true});if(scroll!==false)k.scrollIntoView({block:'nearest',behavior:'smooth'})}}
+function sigOf(list){return JSON.stringify(list.map(c=>[c.id,c.status,(c.exports||[]).length,c.shares||null,c.res?c.res[1]:0,c.taste?c.taste.pick:null,c.autopilot?c.autopilot.state:null,c.campaign?JSON.stringify([c.campaign.live,c.campaign.ready,c.campaign.problems,c.campaign.posts.length,c.campaign.flags_missing]):null,c.voiceover?c.voiceover.at:null]))}
 function render(){
-  const f=document.getElementById('f').value,s=document.getElementById('s').value;
-  let list=clips.filter(c=>f==='all'||c.status===f);
+  sig=sigOf(clips);shownIds=new Set(clips.map(c=>c.id));paintUpd(0);          // whatever redraws, the screen is now up to date
+  const s=document.getElementById('s').value,pae=document.activeElement,hadCard=!!(pae&&pae.classList&&pae.classList.contains('card'));paintTabs();
+  let list=clips.filter(c=>filter==='all'||c.status===filter);
   list.sort((a,b)=>s==='score'?b.score-a.score:s==='ap'?((b.taste?b.taste.p:-1)-(a.taste?a.taste.p:-1)):b.created.localeCompare(a.created));
   g.replaceChildren();exUi.clear();const total=list.length;list=list.slice(0,shown);
-  document.getElementById('count').textContent=(total>list.length?'showing '+list.length+' of '+total:total)+' clip(s)';
-  let moreBtn=null;if(total>list.length){moreBtn=el('button','primary','Show '+Math.min(30,total-list.length)+' more');moreBtn.style.gridColumn='1/-1';moreBtn.onclick=()=>{shown+=30;render()}}
+  document.getElementById('count').textContent=total?(total>list.length?'Showing '+list.length+' of '+total+' clips':total+' clip'+(total>1?'s':'')):'';
+  if(!total){const e=el('div','empty');e.append(el('b',null,filter==='new'?'Nothing to review right now.':'No clips here.'),el('div','mut',filter==='new'?'New clips appear here by themselves while the clipper is running.':'Pick another tab above.'));g.append(e)}
+  let moreBtn=null;if(total>list.length){moreBtn=el('button','primary more','Show '+Math.min(30,total-list.length)+' more');moreBtn.onclick=()=>{shown+=30;render()}}
   for(const c of list){
     if(!trims.has(c.id)){const n=c.clip_len_s||30;let a=c.suggest_start_s,b=c.suggest_end_s;
       if(b-a>n+1){a=Math.min(Math.max(c.moment_s-12,0),Math.max(c.duration_s-n,0));b=Math.min(a+n,c.duration_s)}   // older, longer suggestions -> 30 s
       trims.set(c.id,{start:+a.toFixed(1),end:+b.toFixed(1),vertical:true,captions:false})}
     const t=trims.get(c.id);
-    const card=el('div','card '+c.status);
+    const card=el('div','card '+c.status);card.tabIndex=0;card.dataset.id=c.id;card.addEventListener('focusin',()=>{cur=c.id});
+    card.append(head(c));
     if(c.status==='done'){                              // posted and files deleted: just what was posted and where
-      const r0=el('div','row');r0.append(el('span','score',Math.round(c.score)),el('span','mut',c.channel+' · '+c.created.replace('T',' ')+' · done, video files deleted'));card.append(r0);
-      if((c.description||{}).title)card.append(el('div',null,c.description.title));
       for(const [k,v0] of Object.entries(c.shares||{})){const line=el('div','mut',(shareInfo.platforms[k]||{label:k}).label+': '+v0.status+' '+(v0.at||'').slice(0,16).replace('T',' '));
         if(v0.url){const a0=el('a',null,'open');a0.href=safeUrl(v0.url);a0.target='_blank';line.append(' ',a0)}card.append(line)}
       const s0=el('a',null,'Channel');s0.href=c.source_url;s0.target='_blank';card.append(s0);g.append(card);continue}
+    {const ab=apBadge(c);if(ab)card.append(ab)}
+    {const cb=cpBadge(c);if(cb)card.append(cb)}
     const v=el('video');v.controls=true;v.preload='metadata';v.src=fileUrl(c,c.file);
     v.onloadedmetadata=()=>{v.currentTime=t.start};
     v.ontimeupdate=()=>{if(!v.paused&&v.currentTime>t.end+0.2)v.currentTime=t.start};
     card.append(v);
-    const r=el('div','row');r.append(el('span','score',Math.round(c.score)),el('span','mut',c.channel+' · '+c.created.replace('T',' ')+' · draft '+fmt(c.duration_s)+' · moment at '+fmt(c.moment_s)+(c.res?' · source '+c.res[0]+'x'+c.res[1]:'')));card.append(r);
-    {const ab=apBadge(c);if(ab)card.append(ab)}
-    if(c.res&&c.res[1]<1000)card.append(el('div','hint','⚠ Recorded at '+c.res[1]+'p, so it cannot look sharp when enlarged to 1080x1920. Clips recorded after the update use the best quality the stream offers.'));
-    const sp=c.spike;card.append(el('div','mut',sp.peak+' chatters at once (normal '+Math.round(sp.baseline)+') · '+sp.msgs+' msgs'+(c.loudness_jump_db!=null?' · audio '+(c.loudness_jump_db>0?'+':'')+c.loudness_jump_db+' dB':'')));
-    if(sp.top&&sp.top.length)card.append(el('div','chat',sp.top.map(x=>x[0]+' ×'+x[1]).join('   ')));
-    const tr=el('div','trim'),len=el('span','mut'),upd=()=>{len.textContent='= '+Math.max(t.end-t.start,0).toFixed(1)+' s'};
-    const a=numInput(t.start,x=>{t.start=x;upd()}),b=numInput(t.end,x=>{t.end=x;upd()}),a_=a,b_=b;
-    const setA=el('button',null,'◀ start = player');setA.onclick=()=>{t.start=+v.currentTime.toFixed(1);a.value=t.start;upd()};
-    const setB=el('button',null,'end = player ▶');setB.onclick=()=>{t.end=+v.currentTime.toFixed(1);b.value=t.end;upd()};
-    const shift=d=>{const L=c.duration_s,n=t.end-t.start;let a=Math.min(Math.max(t.start+d,0),Math.max(L-n,0));t.start=+a.toFixed(1);t.end=+(a+n).toFixed(1);a_.value=t.start;b_.value=t.end;v.currentTime=t.start};
-    const left=el('button',null,'◀ 5 s');left.title='Slide the whole window 5 s earlier';left.onclick=()=>shift(-5);
-    const right=el('button',null,'5 s ▶');right.title='Slide the whole window 5 s later';right.onclick=()=>shift(5);
-    const snap=el('button',null,'30 s');snap.title='Make the clip exactly 30 s from the start point';snap.onclick=()=>{t.end=+Math.min(t.start+(c.clip_len_s||30),c.duration_s).toFixed(1);b.value=t.end;upd()};
-    const r1=el('div','row');r1.append(el('span','mut','Trim'),left,right,a,setA,b,setB,snap,len);upd();
+    // ---- trim: a bar you drag, plus fine-tuning
+    const D=c.duration_s||Math.max(t.end,1),tb=el('div','trimbox'),track=el('div','track'),sel=el('div','sel'),h1=el('div','hd'),h2=el('div','hd'),mk=el('div','moment'),ph=el('div','ph');
+    mk.title='The moment chat exploded';h1.title='Drag: where the clip starts';h2.title='Drag: where the clip ends';track.title='Click to jump the player here';track.append(sel,mk,ph,h1,h2);
+    const lab=el('span','tlab');
+    const a=numInput(t.start,x=>{if(!isNaN(x)){t.start=x;sync(false)}}),b=numInput(t.end,x=>{if(!isNaN(x)){t.end=x;sync(false)}});
+    const pc=x=>Math.min(Math.max(100*x/D,0),100)+'%';
+    function sync(inputs){sel.style.left=pc(t.start);sel.style.width=Math.max(0,Math.min(100*(t.end-t.start)/D,100))+'%';h1.style.left=pc(t.start);h2.style.left=pc(t.end);mk.style.left=pc(c.moment_s||0);
+      if(inputs!==false){a.value=t.start;b.value=t.end}lab.replaceChildren(el('b',null,fmt(t.start)+' – '+fmt(t.end)),el('span','mut','  '+Math.max(t.end-t.start,0).toFixed(1)+' s'))}
+    const xt=ev=>{const r=track.getBoundingClientRect();return Math.round(Math.min(Math.max((ev.clientX-r.left)/r.width,0),1)*D*10)/10};
+    for(const [h,isA] of [[h1,true],[h2,false]]){h.onpointerdown=e=>{e.preventDefault();e.stopPropagation();h.setPointerCapture(e.pointerId);
+      h.onpointermove=ev=>{const x=xt(ev);if(isA)t.start=Math.min(x,+(t.end-1).toFixed(1));else t.end=Math.max(x,+(t.start+1).toFixed(1));sync();v.currentTime=isA?t.start:Math.max(t.end-2,t.start)};
+      h.onpointerup=h.onpointercancel=()=>{h.onpointermove=null}}}
+    track.onpointerdown=e=>{if(e.target!==h1&&e.target!==h2)v.currentTime=xt(e)};
+    v.addEventListener('timeupdate',()=>{ph.style.left=pc(v.currentTime)});
+    const setA=el('button','sm','Start here');setA.title='Start the clip where the player is now';setA.onclick=()=>{t.start=+v.currentTime.toFixed(1);if(t.end<=t.start)t.end=+Math.min(D,t.start+(c.clip_len_s||30)).toFixed(1);sync()};
+    const setB=el('button','sm','End here');setB.title='End the clip where the player is now';setB.onclick=()=>{t.end=+Math.max(v.currentTime,0.1).toFixed(1);if(t.start>=t.end)t.start=+Math.max(0,t.end-(c.clip_len_s||30)).toFixed(1);sync()};
+    const shift=d=>{const L=c.duration_s,n=t.end-t.start;let a=Math.min(Math.max(t.start+d,0),Math.max(L-n,0));t.start=+a.toFixed(1);t.end=+(a+n).toFixed(1);sync();v.currentTime=t.start};
+    const left=el('button','sm','◀ 5 s');left.title='Slide the whole clip 5 s earlier';left.onclick=()=>shift(-5);
+    const right=el('button','sm','5 s ▶');right.title='Slide the whole clip 5 s later';right.onclick=()=>shift(5);
+    const snap=el('button','sm','30 s');snap.title='Make the clip exactly 30 s from the start point';snap.onclick=()=>{t.end=+Math.min(t.start+(c.clip_len_s||30),c.duration_s).toFixed(1);sync()};
+    const tr1=el('div','row');tr1.append(el('span','lbl','Clip'),lab,el('span','grow'),setA,setB);
+    const ft=el('details','fine');ft.open=!!openSt.get(c.id+'ft');ft.ontoggle=()=>openSt.set(c.id+'ft',ft.open);ft.append(el('summary',null,'Fine-tune'));const fr=el('div','row');fr.append(left,right,el('span','mut','Start'),a,el('span','mut','End'),b,snap);ft.append(fr);
+    tb.append(track,tr1,ft);sync();card.append(tb);
+    // ---- what happened in chat
+    const sp=c.spike||{},info=el('div','info');
+    info.append(el('div','mut',sp.peak+' chatters at once (normal '+Math.round(sp.baseline)+') · '+sp.msgs+' msgs'+(c.loudness_jump_db!=null?' · audio '+(c.loudness_jump_db>0?'+':'')+c.loudness_jump_db+' dB':'')+(c.res?' · '+c.res[1]+'p':'')));
+    if(sp.top&&sp.top.length){const tg=el('div','tags');for(const x of sp.top.slice(0,8))tg.append(el('span','tag',x[0]+' ×'+x[1]));info.append(tg)}
+    if(c.res&&c.res[1]<1000)info.append(el('div','note warn','⚠ Recorded at '+c.res[1]+'p, so it cannot look sharp when enlarged to 1080x1920. Clips recorded after the update use the best quality the stream offers.'));
+    card.append(info);
+    // ---- the decision: always the same place, big
+    const dec=el('div','decide');
+    const big=(label,st,cls,key)=>{const x=el('button','big '+cls);x.append(label,el('kbd',null,key));x.title=label+' (key '+key+')';x.onclick=()=>setStatus(c,st);return x};
+    if(c.status!=='keep')dec.append(big('Keep','keep','good','K'));
+    if(c.status!=='trash')dec.append(big('Trash','trash','bad','T'));
+    if(c.status!=='new')dec.append(big('Undo','new','','U'));
+    if(Object.values(c.shares||{}).some(x=>['done','draft','opened'].includes(x.status))){
+      const dn=el('button','big','Done (free space)');dn.title='Posted already: delete this clip'+String.fromCharCode(39)+'s video files here to free disk space. Counts as a Keep for learning. Copies in your final clips folder are not touched.';
+      dn.onclick=async()=>{if(!confirm('Delete the draft and export videos of this clip to free space?'+NL+NL+'It stays listed under Done (posted, files freed) and counts as a Keep. Copies in your final clips folder are kept.'))return;
+        await post('/api/status',{id:c.id,status:'done'});load(true)};dec.append(dn)}
+    const src=el('a','chan','Open channel ↗');src.href=c.source_url;src.target='_blank';dec.append(src);
+    card.append(dec);
+    // ---- step 1: export
+    const nx=(c.exports||[]).length,b1=el('div','sbody');
     const r2=el('div','row');
     for(const [k,label] of [['vertical','Vertical 9:16'],['captions','Captions']]){const l=el('label'),cb=el('input');cb.type='checkbox';cb.checked=t[k];cb.onchange=()=>{t[k]=cb.checked};l.append(cb,label);r2.append(l)}
     const ex=el('button','primary','Export clip'),exNote=el('div','note bad');exNote.style.display='none';
-    ex.onclick=async()=>{exPending.add(c.id);paintEx(c.id);const ok=await post('/api/export/start',{id:c.id,start:t.start,end:t.end,vertical:t.vertical,captions:t.captions});
+    ex.onclick=async()=>{exPending.add(c.id);paintEx(c.id);const ok=await post('/api/export/start',{id:c.id,start:t.start,end:t.end,vertical:t.vertical,captions:t.captions,hook:t.hook||'',voiceover:!!(t.vo&&c.voiceover)});
       exPending.delete(c.id);await load(false)};          // the server now owns the state: it flips back only when the file is really made
-    exUi.set(c.id,{ex,note:exNote});paintEx(c.id);
-    r2.append(ex);tr.append(r1,r2,exNote);card.append(tr);
-    if((c.exports||[]).length){const e=el('div','row');e.append(el('span','mut','Exports:'));for(const x of c.exports){const l=el('a',null,(x.vertical?'9:16 ':'')+(x.captions?'CC ':'')+fmt(x.start)+'-'+fmt(x.end));l.href=fileUrl(c,x.file);l.target='_blank';
-      const sf=el('button',null,'📂');sf.title='Show this file in its folder'+(x.copy?' (a copy is also in your final clips folder)':'');sf.onclick=()=>post('/api/reveal',{id:c.id,file:x.file});e.append(l,sf)}card.append(e)}
+    r2.append(el('span','grow'),ex);b1.append(el('div','hint','Uses the clip range above. One encode: trim, 9:16 layout and captions together.'),r2,exNote,cpExportExtras(c,t));
+    if(nx){const e=el('div','row');e.append(el('span','mut','Files:'));for(const x of c.exports){const l=el('a','file',(x.vertical?'9:16 ':'')+(x.captions?'CC ':'')+fmt(x.start)+'-'+fmt(x.end));l.href=fileUrl(c,x.file);l.target='_blank';
+      const sf=el('button','sm','📂');sf.title='Show this file in its folder'+(x.copy?' (a copy is also in your final clips folder)':'');sf.onclick=()=>post('/api/reveal',{id:c.id,file:x.file});e.append(l,sf)}b1.append(e)}
+    const lb=el('button','sm',layouts[c.channel]?'Edit 9:16 layout for '+c.channel+' ✓':'Set 9:16 layout for '+c.channel+' (webcam + gameplay)');lb.onclick=()=>openLayout(c,v);b1.append(lb);
+    const vx=(c.exports||[]).filter(x=>x.vertical).slice(-1)[0];
+    if(vx){const pvid=el('video','vert');pvid.controls=true;pvid.preload='metadata';pvid.src=fileUrl(c,vx.file);b1.append(el('div','mut','Latest 9:16 export:'),pvid)}
+    const s1base=nx?nx+' file'+(nx>1?'s':'')+' made':'not exported yet';
+    const st1=stage(c,'ex','1','Export',s1base,nx>0,b1,false);card.append(st1);
+    exUi.set(c.id,{ex,note:exNote,st:st1.stx,base:s1base});paintEx(c.id);
+    // ---- step 2: post text
     let getText=()=>({title:'',body:''});
-    {const d=c.description||{title:'',body:'',alts:[]},det=el('details');det.open=!!openPost.get(c.id);det.ontoggle=()=>openPost.set(c.id,det.open);getText=()=>({title:ti.value,body:ta.value});
-      det.append(el('summary',null,'Post text: title + description ('+(d.category||'')+')'));
-      let ti=el('input');ti.type='text';ti.value=d.title||'';let ta=el('textarea');ta.rows=4;ta.value=d.body||'';
-      let timer;const save=()=>{clearTimeout(timer);timer=setTimeout(()=>post('/api/describe',{id:c.id,title:ti.value,body:ta.value}),600)};
+    {const d=c.description||{title:'',body:'',alts:[]},det=el('div','sbody');getText=()=>({title:ti.value,body:ta.value});
+      const ht=card.querySelector('.htitle');
+      let ti=el('input');ti.type='text';ti.value=d.title||'';ti.placeholder='Title';let ta=el('textarea');ta.rows=4;ta.value=d.body||'';ta.placeholder='Description';
+      let timer;const save=()=>{clearTimeout(timer);ht.textContent=ti.value||c.channel;timer=setTimeout(()=>post('/api/describe',{id:c.id,title:ti.value,body:ta.value}),600)};
       ti.oninput=save;ta.oninput=save;let alts=(d.alts||[]).slice();let ai=Math.max(alts.indexOf(d.title),0);const hint=el('div','hint');
       const fetchNew=async listen=>{hint.textContent=listen?'Listening to the clip (first time can take a minute)...':'Thinking up new titles...';
         const tt=trims.get(c.id)||{},r=await fetch('/api/describe/new',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:c.id,listen:!!listen,start:tt.start,end:tt.end})});
@@ -149,26 +280,30 @@ function render(){
         const nd=await r.json();alts=nd.alts||[];ai=0;if(alts.length)ti.value=alts[0];
         if(nd.body&&ta.value===(d.auto_body||d.body)){ta.value=nd.body}                 // only replace the description if you have not edited it
         d.auto_body=nd.auto_body;d.body=ta.value;hint.textContent=nd.note||(nd.used_speech?'Titles use what the streamer said.':'Titles use the chat reaction.');save();return true};
-      const other=el('button',null,'↻ Other title');other.onclick=async()=>{other.disabled=true;
+      const other=el('button','sm','↻ Other title');other.onclick=async()=>{other.disabled=true;
         if(alts.length>1&&ai+1<alts.length){ai++;ti.value=alts[ai];save()}else{await fetchNew(false)}other.disabled=false};
-      const more=el('button',null,'🔄 New ideas');more.title='Make a completely new set of titles for this clip';more.onclick=async()=>{more.disabled=true;await fetchNew(false);more.disabled=false};
-      const say=el('button',null,'🎧 From what is said');say.title='Listen to this clip (needs captions set up) and quote the words the streamer said in the titles';say.onclick=async()=>{say.disabled=true;await fetchNew(true);say.disabled=false};
-      const cp=el('button',null,'Copy title + description');cp.onclick=async()=>{const t=ti.value+NL+NL+ta.value;
+      const more=el('button','sm','🔄 New ideas');more.title='Make a completely new set of titles for this clip';more.onclick=async()=>{more.disabled=true;await fetchNew(false);more.disabled=false};
+      const say=el('button','sm','🎧 From what is said');say.title='Listen to this clip (needs captions set up) and quote the words the streamer said in the titles';say.onclick=async()=>{say.disabled=true;await fetchNew(true);say.disabled=false};
+      const cp=el('button','sm','Copy title + description');cp.onclick=async()=>{const t=ti.value+NL+NL+ta.value;
         try{await navigator.clipboard.writeText(t)}catch(e){ta.select();document.execCommand('copy')}cp.textContent='Copied ✓';setTimeout(()=>cp.textContent='Copy title + description',1500)};
-      const dr=el('div','row');dr.append(other,more,say,cp);det.append(ti,ta,dr,hint);card.append(det)}
-    if((c.exports||[]).length){
-      const sd=el('details');sd.open=!!openShare.get(c.id);sd.ontoggle=()=>openShare.set(c.id,sd.open);sd.append(el('summary',null,'Share to TikTok / YouTube Shorts / Instagram Reels'));
+      const dr=el('div','row');dr.append(other,more,say,cp);det.append(el('div','lbl','Title'),ti,el('div','lbl','Description'),ta,dr,hint);
+      const mine=['picked','typed'].includes(d.title_src)||d.body_edited;
+      card.append(stage(c,'tx','2','Post text',mine?'edited by you':'suggested'+(d.category?' · '+d.category:''),mine,det,false))}
+    // ---- step 3: share
+    const posted=Object.entries(c.shares||{}).filter(([k,x])=>['done','draft'].includes(x.status)).map(([k])=>(shareInfo.platforms[k]||{label:k}).label);
+    if(nx){
+      const sd=el('div','sbody');
       const fsel=el('select');const exs=c.exports.slice().reverse();for(const x of exs){const o=el('option',null,x.file+(x.vertical?' (9:16)':' (not vertical)'));o.value=x.file;fsel.append(o)}
       const vi=exs.findIndex(x=>x.vertical);if(vi>0)fsel.selectedIndex=vi;
       const psel=el('select');for(const p of shareInfo.providers){const o=el('option',null,p.label+(p.configured?'':' (not set up)'));o.value=p.name;o.disabled=!p.configured;psel.append(o)}
       const pick=n=>(shareInfo.providers.find(p=>p.name===n)||{}).configured;if(pick('auto'))psel.value='auto';else if(pick('direct'))psel.value='direct';
       const boxes={},row=el('div','row');
-      for(const [k,v] of Object.entries(shareInfo.platforms)){const l=el('label'),cb=el('input');cb.type='checkbox';cb.checked=true;boxes[k]=cb;l.append(cb,v.label);row.append(l)}
+      for(const [k,v] of Object.entries(shareInfo.platforms)){const l=el('label','plat'),cb=el('input');cb.type='checkbox';cb.checked=true;boxes[k]=cb;l.append(cb,v.label);row.append(l)}
       const fl=el('label'),force=el('input');force.type='checkbox';fl.append(force,'post again if already posted');
       const st=el('div','mut');const stat=()=>{st.replaceChildren();for(const [k,v] of Object.entries(c.shares||{})){const line=el('div',null,(shareInfo.platforms[k]||{label:k}).label+': '+v.status+' '+(v.at||'').slice(11,16)+(v.message?' - '+v.message:''));
         if(v.url){const a2=el('a',null,'open');a2.href=v.url;a2.target='_blank';line.append(' ',a2)}
-        if(v.status==='opened'||v.status==='draft'){const m=el('button',null,'Mark as posted');m.onclick=async()=>{await post('/api/share/mark',{id:c.id,platform:k,status:'done'});load(true)};line.append(' ',m)}
-        if(v.status==='done'){const m=el('button',null,'Reset');m.onclick=async()=>{await post('/api/share/mark',{id:c.id,platform:k,status:'reset'});load(true)};line.append(' ',m)}
+        if(v.status==='opened'||v.status==='draft'){const m=el('button','sm','Mark as posted');m.onclick=async()=>{await post('/api/share/mark',{id:c.id,platform:k,status:'done'});load(true)};line.append(' ',m)}
+        if(v.status==='done'){const m=el('button','sm','Reset');m.onclick=async()=>{await post('/api/share/mark',{id:c.id,platform:k,status:'reset'});load(true)};line.append(' ',m)}
         st.append(line)}};stat();
       const go=el('button','primary','Share selected…');
       go.onclick=async()=>{
@@ -186,21 +321,25 @@ function render(){
             if(confirm(shareInfo.platforms[k].label+': page opened, file selected, caption copied to your clipboard.'+NL+NL+'Paste the caption, attach the video and press Post there.'+NL+'Press OK once it is posted (marks it done), or Cancel to leave it as "opened".'))await post('/api/share/mark',{id:c.id,platform:k,status:'done'})}}
         go.disabled=false;go.textContent='Share selected…';load(true)};
       const cn=el('div','row');const paintCn=()=>{cn.replaceChildren();const auto=psel.value==='auto';if(!(auto||psel.value==='direct')||!shareInfo.connected)return;const need=Object.keys(shareInfo.platforms).filter(k=>!shareInfo.connected[k]&&!(auto&&(shareInfo.quick||{})[k]));if(!need.length)return;
-        cn.append(el('span','mut','Not connected yet:'));for(const k of need){const b=el('button',null,'Connect '+shareInfo.platforms[k].label);b.onclick=()=>auto&&k!=='youtube'?openQuick():openAccounts(k);cn.append(b)}};psel.addEventListener('change',paintCn);paintCn();
-      sd.append(el('div','mut','Clip file:'),fsel,el('div','mut','Method:'),psel,cn,row,fl,go,st);card.append(sd)}
-    const lb=el('button',null,layouts[c.channel]?'Edit layout for '+c.channel+' ✓':'Set layout for '+c.channel+' (webcam + gameplay)');lb.onclick=()=>openLayout(c,v);card.append(lb);
-    const vx=(c.exports||[]).filter(x=>x.vertical).slice(-1)[0];
-    if(vx){const pvid=el('video','vert');pvid.controls=true;pvid.preload='metadata';pvid.src=fileUrl(c,vx.file);card.append(el('div','mut','Vertical preview (latest export):'),pvid)}
-    const bt=el('div','row');
-    for(const [label,st] of [['Keep','keep'],['Trash','trash'],['Undo','new']]){if(st===c.status||(st==='new'&&c.status==='new'))continue;
-      const x=el('button',null,label);x.onclick=async()=>{await post('/api/status',{id:c.id,status:st});load(true)};bt.append(x)}
-    if(Object.values(c.shares||{}).some(x=>['done','draft','opened'].includes(x.status))){
-      const dn=el('button',null,'Done (free space)');dn.title='Posted already: delete this clip'+String.fromCharCode(39)+'s video files here to free disk space. Counts as a Keep for learning. Copies in your final clips folder are not touched.';
-      dn.onclick=async()=>{if(!confirm('Delete the draft and export videos of this clip to free space?'+NL+NL+'It stays listed under Done (posted, files freed) and counts as a Keep. Copies in your final clips folder are kept.'))return;
-        await post('/api/status',{id:c.id,status:'done'});load(true)};bt.append(dn)}
-    const src=el('a',null,'Channel');src.href=c.source_url;src.target='_blank';bt.append(src);
-    card.append(bt);g.append(card)}
-  if(moreBtn)g.append(moreBtn)}
+        cn.append(el('span','mut','Not connected yet:'));for(const k of need){const b=el('button','sm','Connect '+shareInfo.platforms[k].label);b.onclick=()=>auto&&k!=='youtube'?openQuick():openAccounts(k);cn.append(b)}};psel.addEventListener('change',paintCn);paintCn();
+      const g2=el('div','form2');g2.append(el('span','lbl','File'),fsel,el('span','lbl','Method'),psel);
+      const gr=el('div','row');gr.append(fl,el('span','grow'),go);
+      sd.append(g2,cn,row,gr,st);
+      card.append(stage(c,'sh','3','Share',posted.length?'posted: '+posted.join(', '):'not shared yet',posted.length>0,sd,false))}
+    else card.append(stage(c,'sh','3','Share','export the clip first',false,null,true));
+    g.append(card)}
+  if(moreBtn)g.append(moreBtn);
+  if(cur&&hadCard)focusCur(false)}                    // a background redraw keeps a focused card focused, but never moves you
+document.addEventListener('keydown',e=>{
+  if(e.ctrlKey||e.metaKey||e.altKey||document.querySelector('.modal'))return;
+  const tg=e.target,tag=(tg.tagName||'');if(['INPUT','TEXTAREA','SELECT'].includes(tag)||tg.isContentEditable)return;
+  const cards=[...g.querySelectorAll('.card')];if(!cards.length)return;
+  let i=cards.findIndex(x=>x.dataset.id===cur);const k=e.key.toLowerCase();
+  if(['arrowright','arrowleft'].includes(k)&&tag==='VIDEO')return;              // the player uses the arrows itself
+  if(['arrowright','l','arrowleft','j'].includes(k)){e.preventDefault();const fw=k==='arrowright'||k==='l';i=i<0?0:Math.min(Math.max(i+(fw?1:-1),0),cards.length-1);cur=cards[i].dataset.id;focusCur();return}
+  if(i<0||e.repeat||!(tg.closest&&tg.closest('.card')))return;const c=clips.find(x=>x.id===cur);if(!c||c.status==='done')return;
+  if(k==='k'){e.preventDefault();setStatus(c,'keep')}else if(k==='t'){e.preventDefault();setStatus(c,'trash')}else if(k==='u'&&c.status!=='new'){e.preventDefault();setStatus(c,'new')}
+  else if(k===' '&&tag!=='BUTTON'&&tag!=='VIDEO'&&tag!=='SUMMARY'){const v=cards[i].querySelector('video');if(v){e.preventDefault();v.paused?v.play():v.pause()}}});
 async function post(u,d){const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});if(!r.ok){alert(await r.text());return false}return true}
 
 let layouts={};
@@ -421,12 +560,23 @@ function openLayout(c,video){
   resetCap.onclick=()=>{C=null;renderCap()};
   sync();renderCap();loadFrame()}
 /*__AP__*/
-document.getElementById('f').onchange=()=>{shown=30;render()};document.getElementById('s').onchange=()=>{shown=30;render()};
+/*__CP__*/
+document.getElementById('s').onchange=()=>{shown=30;render()};
+document.getElementById('upd').onclick=()=>{sig='';lastAct=0;load(true)};
+{const hd=document.querySelector('header.top');let on=false;window.addEventListener('scroll',()=>{const want=on?scrollY>40:scrollY>90;if(want!==on){on=want;hd.classList.toggle('compact',on)}},{passive:true})}
+{const lb=document.getElementById('layoutBtn'),ll=document.getElementById('layoutList');
+  const best=ch=>clips.filter(c=>c.channel===ch&&c.status!=='done'&&c.file).sort((a,b)=>b.created.localeCompare(a.created))[0];
+  const open=ch=>{const c=best(ch);if(c)openLayout(c,{currentTime:c.moment_s||0})};
+  lb.onclick=e=>{e.stopPropagation();const chs=[...new Set(clips.filter(c=>c.status!=='done'&&c.file).map(c=>c.channel))].sort();
+    if(!chs.length){alert('No clips yet: the layout is set on a clip of that streamer.');return}
+    if(chs.length===1){open(chs[0]);return}
+    ll.replaceChildren(...chs.map(ch=>{const b=el('button',null,(layouts[ch]?'✓ ':'')+ch);b.onclick=()=>open(ch);return b}));ll.hidden=!ll.hidden};
+  document.addEventListener('click',e=>{if(!lb.contains(e.target))ll.hidden=true})}{const sb=document.getElementById('setupBtn'),sl=document.getElementById('setupList');sb.onclick=e=>{e.stopPropagation();sl.hidden=!sl.hidden};sl.onclick=()=>{sl.hidden=true};document.addEventListener('click',e=>{if(!sb.contains(e.target))sl.hidden=true})}
 document.getElementById('purge').onclick=async()=>{if(confirm('Permanently delete every trashed clip file?')){await post('/api/purge',{});load(true)}};
-document.getElementById('folders').onclick=openFolders;document.getElementById('accts').onclick=openAccounts;document.getElementById('quick').onclick=openQuick;Promise.all([loadLayouts(),loadShare()]).then(()=>{load(true);const m=location.hash.match(/connect=([a-z]*)/);if(m)openAccounts(m[1])});(function tick(){setTimeout(async()=>{try{await load(false)}catch(e){}tick()},clips.some(exBusy)?1500:10000)})();
+document.getElementById('folders').onclick=openFolders;document.getElementById('accts').onclick=openAccounts;document.getElementById('quick').onclick=openQuick;Promise.all([loadLayouts(),loadShare()]).then(()=>{load(true);if(!(shareInfo.providers||[]).some(p=>p.automatic&&p.configured)){const sb=document.getElementById('setupBtn');sb.classList.add('dot');sb.title='No account connected for posting yet: open Quick connect or Accounts'}const m=location.hash.match(/connect=([a-z]*)/);if(m)openAccounts(m[1])});(function tick(){setTimeout(async()=>{try{await load(false)}catch(e){}tick()},clips.some(exBusy)?1500:10000)})();
 </script>"""
 
-PAGE = PAGE.replace("/*__AP__*/", autopilot_page.JS)
+PAGE = PAGE.replace("/*__AP__*/", autopilot_page.JS).replace("/*__CP__*/", campaigns_page.JS)
 
 
 def _write_json(path: Path, data: dict):
@@ -488,27 +638,63 @@ class Store:
         out = []
         ap = autopilot.load()
         ready = taste.readiness(taste.model(), ap["min_precision"], ap["min_confidence"])
+        camps = campaigns.load()                      # paid campaigns: each card shows what would block Post
+        rows, pp = (campaigns.posts() if camps else []), None
+        prov = next((share.PROVIDERS[n] for n in ("auto", "direct") if n in share.PROVIDERS and share.PROVIDERS[n].configured()), None)
+        if camps and prov:
+            pp = prov.problems
         for p, m in self._metas():
             m["dir"] = p.parent.relative_to(self.root).as_posix()
             m["res"] = m.get("res") or (self.size_of(p.parent / m["file"]) if m.get("file") else None)
             m["export_job"] = self.job_view(m.get("id"))
-            m["taste"] = self._taste_view(m, ready)
+            m["taste"] = self._taste_view(m, ready, ap)
             if not m.get("description"):
                 m["description"] = self._fresh_description(p, m)
+            m["campaign"] = campaigns.card_view(m, pp, camps=camps, rows=rows) if camps else None
             out.append(m)
         return out
 
+    def campaigns_view(self) -> dict:
+        """Everything the Campaigns window shows."""
+        camps, problems = campaigns.load_all()
+        rows = campaigns.posts()
+        return {"text": campaigns.raw_text(), "example": json.dumps(campaigns.EXAMPLE, indent=2), "path": str(campaigns.path()),
+                "campaigns": camps, "problems": problems, "stats": {c["id"]: campaigns.stats(c, rows) for c in camps},
+                "live": {c["id"]: campaigns.live_reason(c, None, rows) for c in camps}, "posts": rows, "to_submit": campaigns.to_submit_groups()}
+
+    def update_campaign_post(self, pid: str, body: dict) -> dict:
+        """Submitted / approved / rejected, the post link and its views. A rejection is saved as a bad example of your style,
+        with the campaign's reason, so the learner and the teacher skill can see what not to do."""
+        before = next((r for r in campaigns.posts() if r["id"] == pid), None)
+        row = campaigns.update_post(pid, status=body.get("status"), reason=body.get("reason"), url=body.get("url"), views=body.get("views"))
+        if row["status"] == "rejected" and (before or {}).get("status") != "rejected":
+            p, m = self.find(row["clip"])
+            if not p:                                         # its record is gone: keep the lesson with what the post log knows
+                m = {"id": row["clip"], "channel": str(row["clip"]).split("/")[0], "description": {"title": row.get("title", "")}}
+            style.record(m, "campaign_reject", "bad", "you", p.parent if p else None, note=f"{row['campaign']}: {row['reason']}")
+        return row
+
     @staticmethod
-    def _taste_view(m: dict, ready: dict) -> dict | None:
+    def _taste_view(m: dict, ready: dict, ap: dict | None = None) -> dict | None:
         """What the learned taste thinks of this clip: chance you would keep it, why, and whether autopilot would act on it."""
         pred = taste.predict(m)
         if not pred:
             return None
-        return {**pred, "pick": bool(ready["ok"] and pred["p"] >= ready["threshold"])}
+        sc = autopilot.clip_score(m)
+        enough = sc is not None and sc >= (ap or {}).get("min_score", 0)                  # it never posts a clip under your score floor
+        return {**pred, "pick": bool(ready["ok"] and pred["p"] >= ready["threshold"] and enough)}
+
+    @staticmethod
+    def style_rules(m: dict) -> dict | None:
+        """Your learned style for this clip's streamer, unless you switched "use my style" off in the Autopilot window."""
+        try:
+            return style.load(m.get("channel")) if autopilot.load()["use_style"] else None
+        except Exception:
+            return None
 
     def _fresh_description(self, p: Path, m: dict) -> dict:
         words = cached_words(p.parent / m["file"]) if m.get("file") else []
-        d = suggest_description(m, self.cfg, words or None)
+        d = suggest_description(m, self.cfg, words or None, rules=self.style_rules(m))
         d["auto_body"] = d["body"]
         return d
 
@@ -533,9 +719,10 @@ class Store:
         with self.lock:
             p, m = self.find(cid)
             old = m.get("description") or {}
-            fresh = suggest_description(m, self.cfg, words, (lo, hi), seed=int(old.get("seed", -1)) + 1, seen=old.get("seen"))
+            fresh = suggest_description(m, self.cfg, words, (lo, hi), seed=int(old.get("seed", -1)) + 1, seen=old.get("seen"),
+                                        rules=self.style_rules(m))
             body_edited = bool(old.get("body")) and old.get("body") != old.get("auto_body")      # no record of an automatic body = treat as yours
-            d = {**old, **fresh, "auto_body": fresh["body"]}
+            d = {**old, **fresh, "auto_body": fresh["body"], "title_src": "auto", "body_edited": body_edited}
             if body_edited:
                 d["body"] = old["body"]                     # never overwrite text you wrote yourself
             m["description"] = d
@@ -562,7 +749,7 @@ class Store:
                     return False
                 if (self.jobs.get(cid) or {}).get("state") in ("queued", "encoding"):
                     return False                                  # an export is still writing this clip's files
-                names = [m.get("file")] + [e.get("file") for e in m.get("exports") or []]
+                names = [m.get("file")] + [e.get("file") for e in m.get("exports") or []] + [(m.get("voiceover") or {}).get("file")]
                 failed = False
                 for name in names + [(m.get("file") or "").replace(".mp4", ".words.json")]:
                     if name and Path(name).name == name:          # only plain file names next to the .clip.json
@@ -578,11 +765,15 @@ class Store:
                 m["files_deleted"] = True
             elif m.get("status") == "done":
                 return False                                      # its files are gone: it cannot go back to review
+            if (m.get("autopilot") or {}).get("state") == "trashed" and status != "trash":
+                m["autopilot"]["state"] = "restored"              # you overruled the Autopilot's trash: yours from now on
             m["status"] = status
             _write_json(p, m)
         if status != "done" or taste.posted_by_you(m):                              # Done on an Autopilot-only post is no judgement of yours
             taste.record(m, {"keep": 1, "trash": 0, "done": 1}.get(status), status)           # kept in your settings folder: survives "Delete trashed files"
         taste.retrain_soon()
+        verdict, fail = style.verdict_for(status, m)
+        style.record(m, "undo" if status == "new" else status, verdict, "you", p.parent, rule_fail=fail)
         return True
 
     def set_description(self, cid: str, title: str, body: str) -> bool:
@@ -593,10 +784,17 @@ class Store:
             if not p:
                 return False
             d = m.get("description") or self._fresh_description(p, m)
+            if title != d.get("title"):                     # who wrote the title: one of the suggestions you picked, or typed by you
+                d["title_src"] = "picked" if title in (d.get("alts") or []) + (d.get("seen") or []) else "typed"
+            if body != d.get("body"):
+                d["body_edited"] = body != d.get("auto_body", d.get("body"))
+            changed = (title, body) != (d.get("title"), d.get("body"))
             d["title"], d["body"] = title, body
             m["description"] = d
             _write_json(p, m)
-            return True
+        if changed:
+            style.record(m, "describe", "none", "you", p.parent)
+        return True
 
     def copy_to_export_dir(self, f: Path, channel: str) -> str | None:
         """Also place the finished clip in the folder you chose for final clips (if any)."""
@@ -650,7 +848,8 @@ class Store:
             j = self.jobs.get(cid)
             return {"state": j["state"], "message": j["message"], "since": j["since"]} if j else None
 
-    def start_export(self, cid: str, start: float, end: float, vertical: bool, captions: bool) -> dict:
+    def start_export(self, cid: str, start: float, end: float, vertical: bool, captions: bool, hook: str | None = None,
+                     voiceover: bool = False) -> dict:
         """Queue an export and return at once. The clip stays 'queued' / 'encoding' on the SERVER until the file really exists and is
         recorded, so the page shows the right button state after any redraw, reload or second tab. Bad requests fail here, not later."""
         p, m = self.find(cid)
@@ -665,14 +864,16 @@ class Store:
             self.jobs[cid] = job
             if self._export_pool is None:
                 self._export_pool = PriorityPool(max(1, self.cfg.cut_workers), "export")
-            self._export_pool.submit(0, self._run_export, cid, job, start, end, vertical, captions)
+            self._export_pool.submit(0, self._run_export, cid, job, start, end, vertical, captions, hook, voiceover)
         return {"state": "queued"}
 
-    def _run_export(self, cid: str, job: dict, start: float, end: float, vertical: bool, captions: bool) -> None:
+    def _run_export(self, cid: str, job: dict, start: float, end: float, vertical: bool, captions: bool, hook: str | None = None,
+                    voiceover: bool = False) -> None:
         with self.job_lock:
             job["state"] = "encoding"
         try:
-            self.export(cid, start, end, vertical, captions)          # records the export in the clip's file before returning
+            extra = {k: v for k, v in (("hook", hook), ("voiceover", voiceover)) if v}
+            self.export(cid, start, end, vertical, captions, **extra)   # records the export in the clip's file before returning
         except Exception as e:
             msg = str(e) if isinstance(e, (ValueError, CaptionsUnavailable, RuntimeError)) else f"export failed: {e}"
             with self.job_lock:
@@ -688,14 +889,67 @@ class Store:
                 del self.jobs[cid]
         return True
 
-    def export(self, cid: str, start: float, end: float, vertical: bool, captions: bool) -> str:
-        """Precise trim (+ optional 9:16, + optional burned captions) in ONE encode. Returns the new file name."""
+    VO_EXT = ("webm", "ogg", "mp3", "wav", "m4a")
+    VO_MAX = 25 * 1024 * 1024
+
+    def save_voiceover(self, cid: str, data: str, ext: str) -> dict:
+        """Your voice-over for a clip (recorded in the page or picked from a file), saved next to the clip under a name we choose."""
+        ext = str(ext or "").lower().lstrip(".")
+        if ext not in self.VO_EXT:
+            raise ValueError("voice-over must be a " + ", ".join(self.VO_EXT) + " file")
+        try:
+            raw = base64.b64decode(str(data or ""), validate=True)
+        except (binascii.Error, ValueError):
+            raise ValueError("the voice-over did not arrive in one piece: try again") from None
+        if not raw or len(raw) > self.VO_MAX:
+            raise ValueError("the voice-over must be between 1 byte and 25 MB")
+        with self.lock:
+            p, m = self.find(cid)
+            if not p or not m.get("file"):
+                raise ValueError("clip not found")
+            name = f"{Path(m['file']).stem}_vo.{ext}"
+            (p.parent / name).write_bytes(raw)
+            old = (m.get("voiceover") or {}).get("file")
+            if old and old != name and Path(old).name == old:
+                (p.parent / old).unlink(missing_ok=True)
+            m["voiceover"] = {"file": name, "size": len(raw), "at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+            _write_json(p, m)
+            return m["voiceover"]
+
+    def delete_voiceover(self, cid: str) -> bool:
+        with self.lock:
+            p, m = self.find(cid)
+            if not p:
+                return False
+            old = (m.get("voiceover") or {}).get("file")
+            if old and Path(old).name == old:
+                try:
+                    (p.parent / old).unlink(missing_ok=True)
+                except OSError:                               # still in use (an export is reading it): try again later
+                    return False
+            m.pop("voiceover", None)
+            _write_json(p, m)
+        return True
+
+    def export(self, cid: str, start: float, end: float, vertical: bool, captions: bool, by: str = "you",
+               hook: str | None = None, voiceover: bool = False) -> str:
+        """Precise trim (+ optional 9:16, + optional burned captions) in ONE encode. Returns the new file name.
+        `by` = "you" or "autopilot": only your own exports teach your style."""
         p, m = self.find(cid)
         if not p:
             raise ValueError("clip not found")
         src = p.parent / m["file"]
         self._check_trim(m, start, end)
+        vo = None
+        if voiceover:
+            v = str((m.get("voiceover") or {}).get("file") or "")
+            if not v or Path(v).name != v or not (p.parent / v).is_file():
+                raise ValueError("record or pick a voice-over first")
+            vo = p.parent / v
+        hook = " ".join(str(hook or "").split())[:120] or None
         layout = LayoutStore(self.root).get(m["channel"]) if vertical else None
+        cp = campaigns.plan(m, layout, vertical, self.cfg)          # a paid campaign: keep must_show in, burn the disclosure
+        layout = cp["layout"]
         ass = None
         if captions:
             words = transcribe(src, self.cfg, start, end)          # only the part being exported; may raise CaptionsUnavailable
@@ -706,9 +960,11 @@ class Store:
                                  "Move the trim, or export without captions.")
             ass = build_ass(words, start, end, vertical, self.cfg.caption_font, seam=(layout or {}).get("mode") == "split",
                             box=(layout or {}).get("captions"))
-        name = f"{src.stem}_{int(start * 10)}-{int(end * 10)}{'_v' if vertical else ''}{'_cc' if captions else ''}.mp4"
+        ass = campaigns.burn(cp, ass, vertical, self.cfg, end - start, m, hook=hook)
+        name = (f"{src.stem}_{int(start * 10)}-{int(end * 10)}{'_v' if vertical else ''}{'_cc' if captions else ''}"
+                f"{'_ad' if cp['record'] else ''}{'_hk' if hook else ''}{'_vo' if vo else ''}.mp4")
         errs: list[str] = []
-        placed = export_clip(src, p.parent / name, start, end, self.cfg, vertical, ass, layout, errs)
+        placed = export_clip(src, p.parent / name, start, end, self.cfg, vertical, ass, layout, errs, voiceover=vo)
         if not placed:
             why = errs[0] if errs else "see the console running `review`"
             raise RuntimeError(("" if why.startswith("could not save") else "ffmpeg failed: ") + why)
@@ -719,8 +975,12 @@ class Store:
             m.setdefault("exports", [])
             m["exports"] = [e for e in m["exports"] if e["file"] != name] + [
                 {"file": name, "start": start, "end": end, "vertical": vertical, "captions": captions, "copy": copy,
-                 "layout": (layout or {}).get("mode", self.cfg.vertical_mode) if vertical else None}]
+                 "layout": (layout or {}).get("mode", self.cfg.vertical_mode) if vertical else None, "by": by,
+                 **({"campaign": cp["record"]} if cp["record"] else {}),
+                 **({"originality": {"voiceover": bool(vo), "hook": bool(hook)}} if vo or hook else {})}]
             _write_json(p, m)
+        if by == "you":
+            style.record(m, "export", "none", "you", p.parent)
         return name
 
     def save_account(self, platform: str, values: dict, options: dict) -> dict:
@@ -750,7 +1010,7 @@ class Store:
         with self.lock:
             for p, m in list(self._metas()):
                 if m.get("status") == "trash":
-                    names = [m.get("file")] + [e["file"] for e in m.get("exports", [])]
+                    names = [m.get("file")] + [e["file"] for e in m.get("exports", [])] + [(m.get("voiceover") or {}).get("file")]
                     for name in names + [m.get("file", "").replace(".mp4", ".words.json")]:
                         if name:
                             (p.parent / name).unlink(missing_ok=True)
@@ -800,6 +1060,10 @@ def make_handler(store: Store):
                 return self._send(200, json.dumps(zernio.summary()).encode())
             if path == "/api/autopilot":
                 return self._send(200, json.dumps(autopilot.status(store)).encode())
+            if path == "/api/campaigns":
+                return self._send(200, json.dumps(store.campaigns_view(), ensure_ascii=False).encode())
+            if path == "/api/campaigns/todo":
+                return self._send(200, json.dumps(campaigns.to_submit_groups(), ensure_ascii=False).encode())
             if path == "/api/accounts":
                 return self._send(200, json.dumps({"platforms": accounts.status(), "redirect_uri": accounts.redirect_uri(store.port),
                                                    "setup": accounts.setup_guide(store.port)}).encode())
@@ -892,7 +1156,8 @@ def make_handler(store: Store):
             elif path == "/api/export/start":
                 try:
                     return self._send(200, json.dumps(store.start_export(str(body.get("id")), float(body["start"]), float(body["end"]),
-                                                                         bool(body.get("vertical")), bool(body.get("captions")))).encode())
+                                                                         bool(body.get("vertical")), bool(body.get("captions")),
+                                                                         str(body.get("hook") or ""), bool(body.get("voiceover")))).encode())
                 except (ValueError, KeyError) as e:
                     return self._send(400, str(e).encode(), "text/plain")
             elif path == "/api/export/dismiss":
@@ -1013,6 +1278,29 @@ def make_handler(store: Store):
                     return self._send(500, f"could not learn: {e}".encode(), "text/plain")
             elif path == "/api/autopilot/hold":
                 ok = autopilot.Autopilot(store).hold(str(body.get("id")))
+            elif path == "/api/voiceover":
+                try:
+                    return self._send(200, json.dumps(store.save_voiceover(str(body.get("id")), body.get("data"), body.get("ext"))).encode())
+                except (ValueError, OSError) as e:
+                    return self._send(400, str(e).encode(), "text/plain")
+            elif path == "/api/voiceover/delete":
+                ok = store.delete_voiceover(str(body.get("id")))
+            elif path == "/api/campaigns/save":
+                try:
+                    campaigns.save_text(str(body.get("text", "")))
+                    ok = True
+                except (campaigns.CampaignError, OSError) as e:
+                    return self._send(400, str(e).encode(), "text/plain")
+            elif path == "/api/campaigns/post":
+                try:
+                    return self._send(200, json.dumps(store.update_campaign_post(str(body.get("id")), body), ensure_ascii=False).encode())
+                except (campaigns.CampaignError, ValueError, TypeError, OSError) as e:
+                    return self._send(400, str(e).encode(), "text/plain")
+            elif path == "/api/campaigns/views":
+                try:
+                    return self._send(200, json.dumps(campaigns.refresh_views()).encode())
+                except Exception as e:
+                    return self._send(200, json.dumps({"updated": 0, "note": f"Could not refresh the views: {e}"}).encode())
             elif path == "/api/purge":
                 store.purge()
                 ok = True

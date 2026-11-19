@@ -127,7 +127,9 @@ def test_review_store_and_http_export(tmp_path, monkeypatch):
     assert post("/api/export", {"id": "nope", "start": 1, "end": 2})[0] == 400
     assert post("/api/export", {"id": "ch/s/c1", "start": 0, "end": 5000})[0] == 400       # longer than the draft
     code, msg = post("/api/export", {"id": "ch/s/c1", "start": 1, "end": 6, "captions": True})
-    assert code == 400 and "faster-whisper" in msg                                          # clear message, no crash
+    import importlib.util
+    assert code == 400 and ("faster-whisper" in msg if importlib.util.find_spec("faster_whisper") is None
+                            else "speech" in msg)                                            # clear message, no crash
     monkeypatch.setattr(review, "transcribe", lambda p, c, a=None, b=None: WORDS)                           # pretend whisper ran
     code, body = post("/api/export", {"id": "ch/s/c1", "start": 0, "end": 6, "vertical": True, "captions": True})
     assert code == 200 and "_cc" in body

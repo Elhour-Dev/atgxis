@@ -20,6 +20,9 @@ function apBadge(c){
   else if(a.state==='posted')d.append(el('span','note good','Posted by autopilot'+(a.platforms?' to '+a.platforms.join(', '):'')+'. A good pick? Keep or Trash it below: that is how it learns.'));
   else if(a.state==='failed')d.append(el('span','note bad','Autopilot could not post this: '+(a.message||'unknown reason')));
   else if(a.state==='held')d.append(el('span','mut','You stopped autopilot for this clip.'));
+  else if(a.state==='trashed')d.append(el('span','mut','Autopilot moved this to Trash ('+(a.message||'low score')+'). Undo brings it back.'));
+  else if(a.state==='restored'&&c.status==='new')d.append(el('span','mut','Autopilot had trashed this ('+(a.message||'low score')+'); you brought it back.'));
+  else if(a.state==='skipped')d.append(el('span','mut','Autopilot skipped this ('+(a.message||'your style rules')+').'));
   return d}
 
 async function openAutopilot(){
@@ -72,17 +75,21 @@ async function openAutopilot(){
     const lim=el('div','row');
     lim.append(el('span','mut','At most'),per,el('span','mut','posts per 24 h, at least'),gap,el('span','mut','min apart, wait'),delay,el('span','mut','min before posting (your time to veto), never older than'),age,el('span','mut','h'));
     sec.append(lim);
+    const sco=el('div','row'),minS=num(s.min_score),trS=num(s.trash_below);
+    sco.append(el('span','mut','Post only clips scoring at least'),minS,el('span','mut','. Move clips scoring under'),trS,el('span','mut','to Trash (0 = never; you can Undo). Scores in between wait for you.'));
+    sec.append(sco);
     const req=el('div','row');
     req.append(el('span','mut','It must have been right at least'),prec,el('span','mut','% of the time on your past clips, and be at least'),conf,el('span','mut','% sure of each clip'));
     sec.append(req);
+    const stL=el('label'),useSt=el('input');useSt.type='checkbox';useSt.checked=s.use_style;stL.append(useSt,'Use my style (trim, captions, title, description, usual platforms, skip rules) - see "My style" below');sec.append(stL);
     const capL=el('label'),cap=el('input');cap.type='checkbox';cap.checked=s.captions;capL.append(cap,'Add captions when autopilot has to export a clip itself (needs faster-whisper)');sec.append(capL);
     const save=el('button','primary','Save'),m2=el('div','note');save.style.alignSelf='flex-start';
     if(flash){m2.className='note '+flash.cls;m2.textContent=flash.text;flash=null}
     save.onclick=async()=>{
       const body={mode:mode.value,platforms:Object.keys(pb).filter(k=>pb[k].checked),provider:prov.value,channels:Object.keys(cb2).filter(k=>cb2[k].checked),
-        max_per_day:+per.value,gap_min:+gap.value,delay_min:+delay.value,max_age_h:+age.value,min_precision:(+prec.value)/100,min_confidence:(+conf.value)/100,captions:cap.checked};
+        max_per_day:+per.value,gap_min:+gap.value,delay_min:+delay.value,max_age_h:+age.value,min_precision:(+prec.value)/100,min_confidence:(+conf.value)/100,captions:cap.checked,use_style:useSt.checked,min_score:+minS.value,trash_below:+trS.value};
       if(body.mode==='post'&&(!body.platforms.length||!body.channels.length)){m2.className='note bad';m2.textContent='Tick at least one platform and one streamer first.';return}
-      if(body.mode==='post'&&s.mode!=='post'&&!confirm('Switch on automatic posting?'+NL+NL+'Clips it is sure about will be published to '+body.platforms.join(', ')+' WITHOUT you pressing anything, after the waiting time you set, for: '+body.channels.join(', ')+'.'+NL+NL+'You can stop any single clip with "Don\'t post" or by trashing it, and it pauses itself if you trash its posts.'))return;
+      if(body.mode==='post'&&s.mode!=='post'&&!confirm('Switch on automatic posting?'+NL+NL+'Clips it is sure about will be published to '+body.platforms.join(', ')+' WITHOUT you pressing anything, after the waiting time you set, for: '+body.channels.join(', ')+'.'+NL+NL+(body.trash_below>0?'Clips scoring under '+body.trash_below+' from these streamers are moved to Trash (you can Undo).'+NL+NL:'')+'You can stop any single clip with "Don\'t post" or by trashing it, and it pauses itself if you trash its posts.'))return;
       const x=await fetch('/api/autopilot/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
       if(!x.ok){m2.className='note bad';m2.textContent=await x.text();return}
       flash={cls:'good',text:'Saved.'};await refresh()};
@@ -100,7 +107,19 @@ async function openAutopilot(){
     else sec.append(el('div','hint','Nothing yet.'));
     return sec}
 
-  function paint(){body.replaceChildren(learned(),controls(),activity())}
+  function mystyle(){
+    const sec=el('div','acc'),st=S.style;sec.append(el('b',null,'My style'));
+    if(!st){sec.append(el('div','hint','Could not read your style files.'));return sec}
+    sec.append(el('div',null,'Style: '+st.examples+' examples, updated '+(st.updated?new Date(st.updated*1000).toLocaleString():'never')+(S.settings.use_style?'':' (switched off)')));
+    sec.append(el('div','hint','Every Keep, Trash, title or description edit, export and post of yours is an example. A rule changes only when at least 5 examples agree 70% of the time. "taught" rules come from the autoclip-teacher skill.'));
+    const show=v=>v===null||v===undefined?'-':Array.isArray(v)?(v.length?v.join(', '):'-'):typeof v==='boolean'?(v?'yes':'no'):String(v);
+    for(const f of st.fields){if(f.source==='default')continue;
+      sec.append(el('div','hint',f.field+': '+show(f.value)+'  ('+f.source+')'))}
+    if(!st.fields.some(f=>f.source!=='default'))sec.append(el('div','hint','Nothing learned yet: it uses the normal suggestions.'));
+    for(const pr of st.problems||[])sec.append(el('div','note bad',pr));
+    return sec}
+
+  function paint(){body.replaceChildren(learned(),mystyle(),controls(),activity())}
   await refresh();
 }
 document.getElementById('ap').onclick=openAutopilot;

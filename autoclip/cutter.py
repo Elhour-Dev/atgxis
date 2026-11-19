@@ -63,8 +63,11 @@ def _vcodec(cfg: Config) -> list[str]:
     return ["-c:v", enc, "-pix_fmt", "yuv420p", "-b:v", "8M"]
 
 
-def _acodec(cfg: Config) -> list[str]:
-    af = ["-af", "loudnorm=I=-14:TP=-1.5:LRA=11"] if cfg.normalize_audio else []
+LOUDNORM = "loudnorm=I=-14:TP=-1.5:LRA=11"
+
+
+def _acodec(cfg: Config, in_graph: bool = False) -> list[str]:
+    af = ["-af", LOUDNORM] if cfg.normalize_audio and not in_graph else []      # in_graph: the audio comes out of -filter_complex
     return [*af, "-c:a", "aac", "-b:a", "256k", "-ar", "48000"]
 
 
@@ -113,21 +116,41 @@ def cut_clip(segs: list[Segment], a: float, b: float, out: Path, cfg: Config) ->
     return True
 
 
-def _filters(cfg: Config, vertical: bool, ass: str | None, layout: dict | None = None) -> list[str]:
-    """ffmpeg filter arguments: optional 9:16 layout (split / blur / crop), fps cap, optional burned-in captions.
-    `ass` is a bare file name (ffmpeg runs in that folder) so Windows drive letters never break the filter."""
+# your voice-over (input 1) over the stream sound (input 0), which ducks under it while you talk
+# both in stereo 48 kHz; the voice-over is padded with silence so the stream sound keeps going after you stop talking
+_ST = "aformat=sample_rates=48000:channel_layouts=stereo"
+VO_MIX = (f"[0:a]{_ST}[st];[1:a]{_ST},apad,asplit=2[voa][sc];"
+          "[st][sc]sidechaincompress=threshold=0.03:ratio=10:attack=20:release=400[duck];"
+          f"[duck][voa]amix=inputs=2:duration=first:normalize=0,{_ST}[a]")
+VO_ONLY = f"[1:a]{_ST},apad[a]"                                   # a draft without sound: the voice-over alone
+
+
+def has_audio(path: Path) -> bool:
+    r = _run([ffprobe_exe(), "-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "csv=p=0", str(path)], 30)
+    return bool(r.stdout.strip())
+
+
+def _filters(cfg: Config, vertical: bool, ass: str | None, layout: dict | None = None, audio: str | None = None) -> list[str]:
+    """ffmpeg filter arguments: optional 9:16 layout (split / blur / crop), fps cap, optional burned-in captions, optional audio
+    graph ending in [a] (the voice-over mix). `ass` is a bare file name (ffmpeg runs in that folder) so Windows drive letters
+    never break the filter."""
     post = ([f"fps={cfg.out_fps}"] if cfg.out_fps else []) + ([f"ass={ass}"] if ass else [])
     if not vertical:
+        if audio:
+            return ["-filter_complex", "[0:v]" + (",".join(post) or "null") + "[v];" + audio, "-map", "[v]", "-map", "[a]"]
         return ["-vf", ",".join(post)] if post else []
     base = layout if layout else {"mode": cfg.vertical_mode}
     graph = lay.chain(base, getattr(cfg, "sharpen", 0.0))
     if cfg.out_fps:
         # fps FIRST: the scaling/blur/overlay below then runs on 30 frames a second instead of 60 (same picture, ~1.7x faster)
         graph = f"[0:v]fps={cfg.out_fps}[f];" + graph.replace("[0:v]", "[f]", 1)
+    out = "[v]"
     if ass:
         graph += f";[v]ass={ass}[vo]"                      # captions are drawn last, on the finished 1080x1920 frame
-        return ["-filter_complex", graph, "-map", "[vo]", "-map", "0:a?"]
-    return ["-filter_complex", graph, "-map", "[v]", "-map", "0:a?"]
+        out = "[vo]"
+    if audio:
+        return ["-filter_complex", graph + ";" + audio, "-map", out, "-map", "[a]"]
+    return ["-filter_complex", graph, "-map", out, "-map", "0:a?"]
 
 
 def cut_draft(segs: list[Segment], a: float, b: float, out: Path, min_s: float = 15.0) -> tuple[list[Segment], float] | None:
@@ -217,7 +240,8 @@ def _place(tmp: Path, final: Path) -> Path:
 
 
 def export_clip(src: Path, out: Path, start: float, end: float, cfg: Config, vertical: bool = False,
-                ass_text: str | None = None, layout: dict | None = None, errors: list | None = None) -> bool:
+                ass_text: str | None = None, layout: dict | None = None, errors: list | None = None,
+                voiceover: Path | None = None) -> bool:
     """FINAL clip: ONE precise encode that does trim + optional 9:16 layout + optional burned captions together.
     ffmpeg runs inside the output folder with bare file names so Windows drive letters ('C:') never break the ass filter."""
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -227,9 +251,14 @@ def export_clip(src: Path, out: Path, start: float, end: float, cfg: Config, ver
     if ass_text:
         ass_name = out.with_suffix(".ass").name
         (out.parent / ass_name).write_text(ass_text, encoding="utf-8")
-    cmd = [ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error", "-ss", f"{max(start, 0):.3f}", "-i", str(src.resolve()),
-           "-t", f"{max(end - start, 0.5):.3f}", *_filters(cfg, vertical, ass_name, layout), *_vcodec(cfg),
-           *_acodec(cfg), "-movflags", "+faststart", tmp.name]
+    vo_in, audio = [], None
+    if voiceover:                                        # starts with the clip; the clip's length decides where it ends
+        vo_in, audio = ["-i", str(Path(voiceover).resolve())], (VO_MIX if has_audio(src) else VO_ONLY)
+        if cfg.normalize_audio:                          # -af cannot touch a stream made by -filter_complex: normalise inside it
+            audio = audio.replace("[a]", "[am]") + f";[am]{LOUDNORM}[a]"
+    cmd = [ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error", "-ss", f"{max(start, 0):.3f}", "-i", str(src.resolve()), *vo_in,
+           "-t", f"{max(end - start, 0.5):.3f}", *_filters(cfg, vertical, ass_name, layout, audio), *_vcodec(cfg),
+           *_acodec(cfg, bool(audio)), "-movflags", "+faststart", tmp.name]
     cmd, kw = _low_priority(cmd, cfg)
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=900, errors="replace", cwd=out.parent, **kw)

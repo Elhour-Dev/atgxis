@@ -61,8 +61,10 @@ def test_a_damaged_log_never_breaks_learning():
     assert taste.counts()["total"] == 2
 
 
-def test_cannot_write_the_log_does_not_stop_the_click(monkeypatch, capsys):
-    monkeypatch.setattr(taste, "folder", lambda: taste.Path("/proc/definitely/not/writable"))
+def test_cannot_write_the_log_does_not_stop_the_click(monkeypatch, capsys, tmp_path):
+    blocker = tmp_path / "a_file"
+    blocker.write_text("x")
+    monkeypatch.setattr(taste, "folder", lambda: blocker / "sub")                               # a file where a folder should be: fails everywhere
     taste.record(meta(1), 1, "keep")                                                          # must not raise
     assert "could not save" in capsys.readouterr().out
 

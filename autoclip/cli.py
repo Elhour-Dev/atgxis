@@ -133,7 +133,7 @@ def cmd_doctor(_args) -> int:
             print(f"{'':11s}", v or "(version unknown)", "  <- if recording fails, update: winget upgrade Streamlink.Streamlink")
         ok &= bool(p) or not need
     has = importlib.util.find_spec("chat_downloader") is not None
-    print(f"{'chat-downloader':11s}", "OK" if has else "missing (only needed for YouTube): pip install chat-downloader")
+    print(f"{'chat-downloader':11s}", "OK (backup YouTube chat reader)" if has else "not installed (optional backup for YouTube chat): pip install chat-downloader")
     if shutil.which("ffmpeg"):
         enc = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"], capture_output=True, text=True).stdout
         hw = [e for e in ("h264_nvenc", "h264_qsv", "h264_amf") if e in enc]

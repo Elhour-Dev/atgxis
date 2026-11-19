@@ -83,8 +83,11 @@ def test_auto_encoder_falls_back_to_cpu_when_no_gpu():
     _ENC_CACHE.clear()
     assert pick_encoder(Config()) in ("libx264", "h264_nvenc", "h264_qsv", "h264_amf")
     assert pick_encoder(Config(encoder="libx264")) == "libx264"           # explicit setting always wins
-    # ffmpeg lists nvenc/qsv in this sandbox but there is no GPU; the real probe must NOT pick them
-    assert pick_encoder(Config()) == "libx264"
+    # many PCs list nvenc/qsv without the GPU for it: whatever is picked must REALLY encode here
+    enc = pick_encoder(Config())
+    r = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=black:s=256x256:d=0.2",
+                        "-frames:v", "1", "-c:v", enc, "-f", "null", "-"], capture_output=True)
+    assert r.returncode == 0, f"{enc} was picked but cannot encode"
 
 
 def test_captions_sit_on_the_seam_in_split_layout():
