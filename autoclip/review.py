@@ -6,6 +6,7 @@ import mimetypes
 import re
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
@@ -14,10 +15,11 @@ from .config import Config
 from .captions import CaptionsUnavailable, build_ass, cached_words, transcribe, words_in_window
 from . import layout as lay
 import html
-from . import accounts, publish, settings, share        # noqa: F401  (publish registers the 'direct' sharing method)
+from . import accounts, publish, settings, share, zernio      # noqa: F401  (publish / zernio register the 'direct' / 'auto' sharing methods)
 from .cutter import export_clip, grab_frame, probe_size
 from .describe import suggest as suggest_description
 from .facecam import FacecamUnavailable, detect_facecam
+from .lanes import PriorityPool
 from .layout import LayoutError, LayoutStore
 
 PAGE = """<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
@@ -66,10 +68,10 @@ details input[type=text],details input[type=password],details textarea{width:100
 <header><h1>Clip review</h1>
 <select id=f><option value=new>To review</option><option value=keep>Kept</option><option value=trash>Trash</option><option value=all>All</option></select>
 <select id=s><option value=score>Best score first</option><option value=created>Newest first</option></select>
-<button id=folders>📁 Folders</button><button id=accts>🔗 Accounts</button><button id=purge>Delete trashed files</button><span class=mut id=count></span></header>
+<button id=folders>📁 Folders</button><button id=quick class=primary title="Post to Instagram + TikTok with one free key">⚡ Quick connect</button><button id=accts title="YouTube and advanced: your own developer apps">🔗 Accounts</button><button id=purge>Delete trashed files</button><span class=mut id=count></span></header>
 <div class=grid id=g></div>
 <script>
-let clips=[],shown=30,sig='',shareInfo={providers:[],platforms:{}};const openPost=new Map(),openShare=new Map(),NL=String.fromCharCode(10);const trims=new Map();const g=document.getElementById('g');
+let clips=[],shown=30,sig='',shareInfo={providers:[],platforms:{}};const openPost=new Map(),openShare=new Map(),NL=String.fromCharCode(10);const trims=new Map();const exUi=new Map(),exPending=new Set();const g=document.getElementById('g');
 const enc=id=>id.split('/').map(encodeURIComponent).join('/');
 const fmt=t=>Math.floor(t/60)+':'+String(Math.floor(t%60)).padStart(2,'0');
 const fileUrl=(c,f)=>'/files/'+enc(c.dir)+'/'+encodeURIComponent(f);
@@ -78,13 +80,22 @@ async function load(force){
   const next=await (await fetch('/api/clips')).json();
   const ns=JSON.stringify(next.map(c=>[c.id,c.status,(c.exports||[]).length,c.shares||null,c.res?c.res[1]:0]));
   const playing=[...document.querySelectorAll('video')].some(v=>!v.paused);
-  clips=next;if(ns!==sig&&(force||!playing)){sig=ns;render()}}
+  clips=next;if(ns!==sig&&(force||!playing)){sig=ns;render()}
+  for(const id of exUi.keys())paintEx(id)}                // buttons follow the SERVER state, even when a playing video holds back the redraw
+const exBusy=c=>c&&c.export_job&&(c.export_job.state==='queued'||c.export_job.state==='encoding');
+function paintEx(id){
+  const u=exUi.get(id);if(!u)return;const c=clips.find(x=>x.id===id),j=c&&c.export_job;
+  const busy=exPending.has(id)||exBusy(c);
+  u.ex.disabled=busy;u.ex.textContent=busy?((j&&j.state==='encoding')?'Encoding…':'Queued…'):'Export clip';
+  u.note.replaceChildren();u.note.style.display='none';
+  if(!busy&&j&&j.state==='error'){u.note.style.display='';u.note.append('Export failed: '+j.message+' ');
+    const d=el('button',null,'Dismiss');d.onclick=async()=>{await post('/api/export/dismiss',{id});await load(false)};u.note.append(d)}}
 function numInput(v,on){const i=el('input');i.type='number';i.step='0.1';i.min='0';i.value=v;i.oninput=()=>on(parseFloat(i.value));return i}
 function render(){
   const f=document.getElementById('f').value,s=document.getElementById('s').value;
   let list=clips.filter(c=>f==='all'||c.status===f);
   list.sort((a,b)=>s==='score'?b.score-a.score:b.created.localeCompare(a.created));
-  g.replaceChildren();const total=list.length;list=list.slice(0,shown);
+  g.replaceChildren();exUi.clear();const total=list.length;list=list.slice(0,shown);
   document.getElementById('count').textContent=(total>list.length?'showing '+list.length+' of '+total:total)+' clip(s)';
   let moreBtn=null;if(total>list.length){moreBtn=el('button','primary','Show '+Math.min(30,total-list.length)+' more');moreBtn.style.gridColumn='1/-1';moreBtn.onclick=()=>{shown+=30;render()}}
   for(const c of list){
@@ -112,14 +123,17 @@ function render(){
     const r1=el('div','row');r1.append(el('span','mut','Trim'),left,right,a,setA,b,setB,snap,len);upd();
     const r2=el('div','row');
     for(const [k,label] of [['vertical','Vertical 9:16'],['captions','Captions']]){const l=el('label'),cb=el('input');cb.type='checkbox';cb.checked=t[k];cb.onchange=()=>{t[k]=cb.checked};l.append(cb,label);r2.append(l)}
-    const ex=el('button','primary','Export clip');ex.onclick=async()=>{ex.disabled=true;ex.textContent='Encoding…';const ok=await post('/api/export',{id:c.id,start:t.start,end:t.end,vertical:t.vertical,captions:t.captions});ex.disabled=false;ex.textContent='Export clip';if(ok)load(true)};
-    r2.append(ex);tr.append(r1,r2);card.append(tr);
+    const ex=el('button','primary','Export clip'),exNote=el('div','note bad');exNote.style.display='none';
+    ex.onclick=async()=>{exPending.add(c.id);paintEx(c.id);const ok=await post('/api/export/start',{id:c.id,start:t.start,end:t.end,vertical:t.vertical,captions:t.captions});
+      exPending.delete(c.id);await load(false)};          // the server now owns the state: it flips back only when the file is really made
+    exUi.set(c.id,{ex,note:exNote});paintEx(c.id);
+    r2.append(ex);tr.append(r1,r2,exNote);card.append(tr);
     if((c.exports||[]).length){const e=el('div','row');e.append(el('span','mut','Exports:'));for(const x of c.exports){const l=el('a',null,(x.vertical?'9:16 ':'')+(x.captions?'CC ':'')+fmt(x.start)+'-'+fmt(x.end));l.href=fileUrl(c,x.file);l.target='_blank';
       const sf=el('button',null,'📂');sf.title='Show this file in its folder'+(x.copy?' (a copy is also in your final clips folder)':'');sf.onclick=()=>post('/api/reveal',{id:c.id,file:x.file});e.append(l,sf)}card.append(e)}
     let getText=()=>({title:'',body:''});
     {const d=c.description||{title:'',body:'',alts:[]},det=el('details');det.open=!!openPost.get(c.id);det.ontoggle=()=>openPost.set(c.id,det.open);getText=()=>({title:ti.value,body:ta.value});
       det.append(el('summary',null,'Post text: title + description ('+(d.category||'')+')'));
-      var ti=el('input');ti.type='text';ti.value=d.title||'';var ta=el('textarea');ta.rows=4;ta.value=d.body||'';
+      let ti=el('input');ti.type='text';ti.value=d.title||'';let ta=el('textarea');ta.rows=4;ta.value=d.body||'';
       let timer;const save=()=>{clearTimeout(timer);timer=setTimeout(()=>post('/api/describe',{id:c.id,title:ti.value,body:ta.value}),600)};
       ti.oninput=save;ta.oninput=save;let alts=(d.alts||[]).slice();let ai=Math.max(alts.indexOf(d.title),0);const hint=el('div','hint');
       const fetchNew=async listen=>{hint.textContent=listen?'Listening to the clip (first time can take a minute)...':'Thinking up new titles...';
@@ -140,7 +154,7 @@ function render(){
       const fsel=el('select');const exs=c.exports.slice().reverse();for(const x of exs){const o=el('option',null,x.file+(x.vertical?' (9:16)':' (not vertical)'));o.value=x.file;fsel.append(o)}
       const vi=exs.findIndex(x=>x.vertical);if(vi>0)fsel.selectedIndex=vi;
       const psel=el('select');for(const p of shareInfo.providers){const o=el('option',null,p.label+(p.configured?'':' (not set up)'));o.value=p.name;o.disabled=!p.configured;psel.append(o)}
-      if((shareInfo.providers.find(p=>p.name==='direct')||{}).configured)psel.value='direct';
+      const pick=n=>(shareInfo.providers.find(p=>p.name===n)||{}).configured;if(pick('auto'))psel.value='auto';else if(pick('direct'))psel.value='direct';
       const boxes={},row=el('div','row');
       for(const [k,v] of Object.entries(shareInfo.platforms)){const l=el('label'),cb=el('input');cb.type='checkbox';cb.checked=true;boxes[k]=cb;l.append(cb,v.label);row.append(l)}
       const fl=el('label'),force=el('input');force.type='checkbox';fl.append(force,'post again if already posted');
@@ -164,8 +178,8 @@ function render(){
             try{await navigator.clipboard.writeText(r1.text)}catch(e){}
             if(confirm(shareInfo.platforms[k].label+': page opened, file selected, caption copied to your clipboard.'+NL+NL+'Paste the caption, attach the video and press Post there.'+NL+'Press OK once it is posted (marks it done), or Cancel to leave it as "opened".'))await post('/api/share/mark',{id:c.id,platform:k,status:'done'})}}
         go.disabled=false;go.textContent='Share selected…';load(true)};
-      const cn=el('div','row');const paintCn=()=>{cn.replaceChildren();if(psel.value!=='direct'||!shareInfo.connected)return;const need=Object.keys(shareInfo.platforms).filter(k=>!shareInfo.connected[k]);if(!need.length)return;
-        cn.append(el('span','mut','Not connected yet:'));for(const k of need){const b=el('button',null,'Connect '+shareInfo.platforms[k].label);b.onclick=()=>openAccounts(k);cn.append(b)}};psel.addEventListener('change',paintCn);paintCn();
+      const cn=el('div','row');const paintCn=()=>{cn.replaceChildren();const auto=psel.value==='auto';if(!(auto||psel.value==='direct')||!shareInfo.connected)return;const need=Object.keys(shareInfo.platforms).filter(k=>!shareInfo.connected[k]&&!(auto&&(shareInfo.quick||{})[k]));if(!need.length)return;
+        cn.append(el('span','mut','Not connected yet:'));for(const k of need){const b=el('button',null,'Connect '+shareInfo.platforms[k].label);b.onclick=()=>auto&&k!=='youtube'?openQuick():openAccounts(k);cn.append(b)}};psel.addEventListener('change',paintCn);paintCn();
       sd.append(el('div','mut','Clip file:'),fsel,el('div','mut','Method:'),psel,cn,row,fl,go,st);card.append(sd)}
     const lb=el('button',null,layouts[c.channel]?'Edit layout for '+c.channel+' ✓':'Set layout for '+c.channel+' (webcam + gameplay)');lb.onclick=()=>openLayout(c,v);card.append(lb);
     const vx=(c.exports||[]).filter(x=>x.vertical).slice(-1)[0];
@@ -202,7 +216,7 @@ async function openAccounts(focus){
   let S=await (await fetch('/api/accounts')).json();
   const notes={};                                   // platform -> {text, kind, href}: survives a redraw of the cards
   const ov=el('div','modal'),box=el('div','mbox');ov.append(box);box.append(el('h2',null,'Connect your accounts'));
-  box.append(el('div','hint','Optional: only needed for automatic posting. The Share assistant works without any of this. Every platform makes you create a free developer app on your own account (that cannot be skipped); each step below opens the exact page and tells you what to press. Your logins stay on this PC (accounts.json in the autoclip settings folder), are never shown again and are only ever sent to the platform itself.'));
+  box.append(el('div','hint','Advanced. For Instagram + TikTok the ⚡ Quick connect button is simpler; use this window for YouTube or if you prefer your own developer apps. Optional: only needed for automatic posting. The Share assistant works without any of this. Every platform makes you create a free developer app on your own account (that cannot be skipped); each step below opens the exact page and tells you what to press. Your logins stay on this PC (accounts.json in the autoclip settings folder), are never shown again and are only ever sent to the platform itself.'));
   const list=el('div');list.style.cssText='display:flex;flex-direction:column;gap:10px';box.append(list);
   const refresh=async()=>{S=await (await fetch('/api/accounts')).json();await loadShare()};
   const card=pl=>{
@@ -274,6 +288,40 @@ async function openAccounts(focus){
   const build=()=>{list.replaceChildren(...Object.keys(S.platforms).map(card))};
   const cl=el('button',null,'Close');cl.onclick=()=>{ov.remove();sig='';load(true)};box.append(cl);build();document.body.append(ov);
   if(focus){const t=list.querySelector('[data-pl="'+focus+'"]');if(t)t.scrollIntoView()}}
+function openQuick(){
+  const ov=el('div','modal'),box=el('div','mbox');ov.append(box);box.append(el('h2',null,'⚡ Quick connect: Instagram + TikTok'));
+  box.append(el('div','hint','One free Zernio account posts to Instagram and TikTok for you: no developer apps, no approval waiting. Its free plan covers your first 2 connected accounts with unlimited posts, so connect only these two there. YouTube stays in 🔗 Accounts. Your key is kept on this PC and only ever sent to Zernio.'));
+  const steps=[['Create a free Zernio account (no card needed).',{label:'Open Zernio',url:'https://zernio.com'}],
+    ['In Zernio, connect your Instagram (a professional/business account) and your TikTok account. Do not connect more than these two, to stay on the free plan.',{label:'Open Zernio',url:'https://zernio.com'}],
+    ['In Zernio, create an API key (in the dashboard) and copy it.',null]];
+  const ol=el('ol','steps'),key=i=>'quick-'+i;
+  steps.forEach(([text,link],i)=>{const li=el('li'),cb=el('input');cb.type='checkbox';cb.checked=lsGet(key(i))==='1';li.classList.toggle('done',cb.checked);
+    cb.onchange=()=>{lsSet(key(i),cb.checked);li.classList.toggle('done',cb.checked)};
+    const t=el('div','t');t.append(el('b',null,(i+1)+'. '),text);li.append(cb,t);
+    if(link){const a=el('a','btn',link.label+' ↗');a.href=safeUrl(link.url);a.target='_blank';a.rel='noopener';li.append(a)}ol.append(li)});
+  const last=el('li'),t4=el('div','t');t4.append(el('b',null,'4. '),'Paste the key here and press the button. This checks it with Zernio and finds your accounts. Nothing is posted.');last.append(t4);ol.append(last);box.append(ol);
+  const inp=el('input');inp.type='password';inp.placeholder='Zernio API key';inp.autocomplete='off';inp.style.cssText='padding:8px;border-radius:6px;border:1px solid #8884;background:var(--bg);color:var(--fg)';
+  const go=el('button','primary','Save and check'),again=el('button',null,'Check again'),off=el('button',null,'Disconnect'),cl=el('button',null,'Close');
+  const row=el('div','row');row.append(inp,go,again,off,cl);box.append(row);
+  const tt=el('select');for(const [v,t] of [['public','TikTok: post publicly right away'],['draft','TikTok: send to my TikTok drafts, I press Post there']]){const o=el('option',null,t);o.value=v;tt.append(o)}
+  const ttRow=el('div','row');ttRow.append(tt);box.append(ttRow);
+  const res=el('div'),note=el('div','note');res.style.cssText='display:flex;flex-direction:column;gap:6px';box.append(res,note);
+  const trb=el('details');trb.append(el('summary',null,'Something went wrong?'));const ul=el('ul');ul.style.cssText='margin:4px 0 4px 18px;padding:0;font-size:13px';
+  for(const [p,f] of [['Zernio did not accept this key','Copy the key again with its copy button and paste it with nothing before or after it.'],['An account says "not found in Zernio"','Connect it in the Zernio dashboard (step 2), then press Check again.'],['Instagram will not connect in Zernio','The Instagram account must be a professional (business or creator) account linked to a Facebook page.'],['A post fails','The reason is shown in the share result; the same text also appears in the Zernio dashboard under that post.']]){const li=el('li');li.append(el('b',null,p+': '),f);ul.append(li)}
+  trb.append(ul);box.append(trb);
+  const paint=S=>{res.replaceChildren();tt.value=S.tiktok_mode||'public';
+    for(const k of ['instagram','tiktok']){const r=el('div','row'),ok=!!(S.accounts||{})[k];r.append(el('b',null,shareInfo.platforms[k].label),el('span','chip'+(ok?' ok':''),ok?'✅ Connected'+(S.accounts[k].name?' · '+S.accounts[k].name:''):S.saved?'Not found in Zernio yet':'Not connected'));res.append(r)}
+    if(S.accounts&&S.accounts.youtube)res.append(el('div','mut','YouTube is also connected in Zernio and will be posted through it.'));
+    if(S.warning){const w=el('div','note bad');w.textContent=S.warning;res.append(w)}
+    go.textContent=S.saved?'Replace key':'Save and check';again.style.display=off.style.display=S.saved?'':'none';ttRow.style.display=S.saved?'':'none'};
+  const call=async(u,b,busy)=>{note.className='note';note.textContent=busy;const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})});
+    if(!r.ok){note.className='note bad';note.textContent=await r.text();return null}note.textContent='';const S=await r.json();await loadShare();return S};
+  go.onclick=async()=>{go.disabled=true;const S=await call('/api/quick/save',{api_key:inp.value,tiktok_mode:tt.value},'Checking with Zernio…');go.disabled=false;if(S){inp.value='';paint(S);note.className='note good';note.textContent='Connected. Pick "Post automatically" when you share a clip.'}};
+  again.onclick=async()=>{again.disabled=true;const S=await call('/api/quick/refresh',{},'Checking with Zernio…');again.disabled=false;if(S){paint(S);note.className='note good';note.textContent='Up to date.'}};
+  off.onclick=async()=>{if(!confirm('Remove the saved Zernio key from this PC? (Your accounts stay connected in Zernio.)'))return;await post('/api/quick/disconnect',{});await loadShare();paint({saved:false,accounts:{}})};
+  tt.onchange=async()=>{const S=await call('/api/quick/options',{tiktok_mode:tt.value},'Saving…');if(S)paint(S)};
+  cl.onclick=()=>{ov.remove();sig='';load(true)};
+  document.body.append(ov);fetch('/api/quick').then(r=>r.json()).then(paint)}
 async function loadLayouts(){try{layouts=await (await fetch('/api/layouts')).json()}catch(e){}}
 const OUTW=1080,OUTH=1920,even=n=>Math.max(2,Math.round(n/2)*2);
 function openLayout(c,video){
@@ -363,7 +411,7 @@ function openLayout(c,video){
   sync();renderCap();loadFrame()}
 document.getElementById('f').onchange=()=>{shown=30;render()};document.getElementById('s').onchange=()=>{shown=30;render()};
 document.getElementById('purge').onclick=async()=>{if(confirm('Permanently delete every trashed clip file?')){await post('/api/purge',{});load(true)}};
-document.getElementById('folders').onclick=openFolders;document.getElementById('accts').onclick=openAccounts;Promise.all([loadLayouts(),loadShare()]).then(()=>{load(true);const m=location.hash.match(/connect=([a-z]*)/);if(m)openAccounts(m[1])});setInterval(()=>load(false),10000);
+document.getElementById('folders').onclick=openFolders;document.getElementById('accts').onclick=openAccounts;document.getElementById('quick').onclick=openQuick;Promise.all([loadLayouts(),loadShare()]).then(()=>{load(true);const m=location.hash.match(/connect=([a-z]*)/);if(m)openAccounts(m[1])});(function tick(){setTimeout(async()=>{try{await load(false)}catch(e){}tick()},clips.some(exBusy)?1500:10000)})();
 </script>"""
 
 
@@ -377,6 +425,9 @@ class Store:
     def __init__(self, root: Path, cfg: Config):
         self.root, self.cfg, self.lock = root.resolve(), cfg, threading.Lock()
         self.port = 8765                              # set by serve(); the sign-in pages come back to this port
+        self.jobs: dict[str, dict] = {}               # clip id -> running / failed export (the page paints its button from this)
+        self.job_lock = threading.Lock()
+        self._export_pool: PriorityPool | None = None
 
     def _metas(self):
         for p in self.root.rglob("*.clip.json"):
@@ -424,6 +475,7 @@ class Store:
         for p, m in self._metas():
             m["dir"] = p.parent.relative_to(self.root).as_posix()
             m["res"] = m.get("res") or (self.size_of(p.parent / m["file"]) if m.get("file") else None)
+            m["export_job"] = self.job_view(m.get("id"))
             if not m.get("description"):
                 m["description"] = self._fresh_description(p, m)
             out.append(m)
@@ -537,14 +589,61 @@ class Store:
             raise ValueError("no face found consistently in this clip. Draw the webcam box by hand.")
         return rect
 
+    @staticmethod
+    def _check_trim(m: dict, start: float, end: float) -> None:
+        if not (0 <= start < end <= m["duration_s"] + 1) or end - start > 600:
+            raise ValueError(f"bad trim {start}-{end} (draft is {m['duration_s']}s)")
+
+    def job_view(self, cid: str | None) -> dict | None:
+        with self.job_lock:
+            j = self.jobs.get(cid)
+            return {"state": j["state"], "message": j["message"], "since": j["since"]} if j else None
+
+    def start_export(self, cid: str, start: float, end: float, vertical: bool, captions: bool) -> dict:
+        """Queue an export and return at once. The clip stays 'queued' / 'encoding' on the SERVER until the file really exists and is
+        recorded, so the page shows the right button state after any redraw, reload or second tab. Bad requests fail here, not later."""
+        p, m = self.find(cid)
+        if not p:
+            raise ValueError("clip not found")
+        self._check_trim(m, start, end)
+        with self.job_lock:
+            cur = self.jobs.get(cid)
+            if cur and cur["state"] in ("queued", "encoding"):
+                raise ValueError("this clip is already being exported: wait for it to finish")
+            job = {"state": "queued", "message": "", "since": time.time()}
+            self.jobs[cid] = job
+            if self._export_pool is None:
+                self._export_pool = PriorityPool(max(1, self.cfg.cut_workers), "export")
+            self._export_pool.submit(0, self._run_export, cid, job, start, end, vertical, captions)
+        return {"state": "queued"}
+
+    def _run_export(self, cid: str, job: dict, start: float, end: float, vertical: bool, captions: bool) -> None:
+        with self.job_lock:
+            job["state"] = "encoding"
+        try:
+            self.export(cid, start, end, vertical, captions)          # records the export in the clip's file before returning
+        except Exception as e:
+            msg = str(e) if isinstance(e, (ValueError, CaptionsUnavailable, RuntimeError)) else f"export failed: {e}"
+            with self.job_lock:
+                job.update(state="error", message=msg)                # stays visible until dismissed or the next try
+            return
+        with self.job_lock:
+            if self.jobs.get(cid) is job:
+                del self.jobs[cid]                                    # only now does the button go back to normal
+
+    def dismiss_export(self, cid: str) -> bool:
+        with self.job_lock:
+            if (self.jobs.get(cid) or {}).get("state") == "error":
+                del self.jobs[cid]
+        return True
+
     def export(self, cid: str, start: float, end: float, vertical: bool, captions: bool) -> str:
         """Precise trim (+ optional 9:16, + optional burned captions) in ONE encode. Returns the new file name."""
         p, m = self.find(cid)
         if not p:
             raise ValueError("clip not found")
         src = p.parent / m["file"]
-        if not (0 <= start < end <= m["duration_s"] + 1) or end - start > 600:
-            raise ValueError(f"bad trim {start}-{end} (draft is {m['duration_s']}s)")
+        self._check_trim(m, start, end)
         layout = LayoutStore(self.root).get(m["channel"]) if vertical else None
         ass = None
         if captions:
@@ -644,7 +743,10 @@ def make_handler(store: Store):
                                                    "settings_file": str(settings.path())}).encode())
             if path == "/api/share/providers":
                 return self._send(200, json.dumps({"providers": share.providers_info(), "platforms": share.PLATFORMS,
-                                                   "connected": {p: accounts.connected(p) for p in share.PLATFORMS}}).encode())
+                                                   "connected": {p: accounts.connected(p) for p in share.PLATFORMS},
+                                                   "quick": {p: zernio.covers(p) for p in share.PLATFORMS}}).encode())
+            if path == "/api/quick":
+                return self._send(200, json.dumps(zernio.summary()).encode())
             if path == "/api/accounts":
                 return self._send(200, json.dumps({"platforms": accounts.status(), "redirect_uri": accounts.redirect_uri(store.port),
                                                    "setup": accounts.setup_guide(store.port)}).encode())
@@ -734,6 +836,14 @@ def make_handler(store: Store):
                     return self._send(400, str(e).encode(), "text/plain")
                 except Exception as e:
                     return self._send(500, f"export failed: {e}".encode(), "text/plain")
+            elif path == "/api/export/start":
+                try:
+                    return self._send(200, json.dumps(store.start_export(str(body.get("id")), float(body["start"]), float(body["end"]),
+                                                                         bool(body.get("vertical")), bool(body.get("captions")))).encode())
+                except (ValueError, KeyError) as e:
+                    return self._send(400, str(e).encode(), "text/plain")
+            elif path == "/api/export/dismiss":
+                ok = store.dismiss_export(str(body.get("id")))
             elif path == "/api/layout":
                 try:
                     if not re.fullmatch(r"[\w.-]{1,60}", str(body.get("channel", ""))):
@@ -804,6 +914,20 @@ def make_handler(store: Store):
                     return self._send(200, json.dumps(accounts.verify(str(body.get("platform")))).encode())
                 except (accounts.ApiError, KeyError, TypeError) as e:
                     return self._send(400, str(e).encode(), "text/plain")
+            elif path in ("/api/quick/save", "/api/quick/refresh", "/api/quick/options"):
+                try:
+                    if path == "/api/quick/save":
+                        out = zernio.connect(str(body.get("api_key", "")), body.get("tiktok_mode"))
+                    elif path == "/api/quick/refresh":
+                        out = zernio.refresh()
+                    else:
+                        out = zernio.set_options(str(body.get("tiktok_mode")))
+                    return self._send(200, json.dumps(out).encode())
+                except accounts.ApiError as e:
+                    return self._send(400, str(e).encode(), "text/plain")
+            elif path == "/api/quick/disconnect":
+                zernio.disconnect()
+                ok = True
             elif path == "/api/accounts/disconnect":
                 if str(body.get("platform")) in accounts.FIELDS:
                     accounts.clear(str(body["platform"]))

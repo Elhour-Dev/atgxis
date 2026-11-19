@@ -139,6 +139,10 @@ one invalid or not-connected platform blocks the whole request (nothing is uploa
 unless you tick "post again", and each result is recorded.
 
 * **Share assistant** (no setup): opens each platform's upload page, selects the file, copies the caption; you press Post.
+* **⚡ Quick connect + "Post automatically"** (free, fastest to set up): the **⚡ Quick connect** button opens a 4-step guide. You create a
+  free [Zernio](https://zernio.com) account, connect Instagram + TikTok there, paste one API key here. No developer apps, no approval waits.
+  Zernio's free plan covers your first 2 connected accounts with unlimited posts, so keep YouTube on the direct method below. "Post
+  automatically" then uses Zernio for Instagram/TikTok and your own account for YouTube. TikTok can post publicly or go to your drafts.
 * **Post directly to my connected accounts** (free, official APIs): uploads for you. Set up once with a guided window:
   `python -m autoclip connect` (or `connect youtube` / `instagram` / `tiktok`), or press **🔗 Accounts** in the review page, or press the
   **Connect ...** button that appears in a clip's Share box when a platform is missing. Logins are kept in `%APPDATA%\autoclip\accounts.json` on your PC only.

@@ -39,17 +39,30 @@ _STRICT: dict = {}                                    # faster-whisper defaults 
 _LENIENT: dict = {"no_speech_threshold": None, "log_prob_threshold": None}   # never skip a block as "no speech"
 
 
-def _run_model(model, audio, vad: bool, lenient: bool = False, language: str | None = None) -> list[Word]:
+MIN_LANG_CONFIDENCE = 0.5       # below this, a "detected" language is a guess made on noise, not on a voice
+
+
+def _invented(seg) -> bool:
+    """A segment from a relaxed pass that looks made up: Whisper itself says 'probably no speech' AND the text is a poor fit for the
+    audio. This is what music / game sound / silence turns into when the no-speech checks are switched off (often in a random language)."""
+    return (getattr(seg, "no_speech_prob", None) or 0.0) > 0.6 and (getattr(seg, "avg_logprob", None) or 0.0) < -1.2
+
+
+def _run_model(model, audio, vad: bool, lenient: bool = False, language: str | None = None, heard: dict | None = None) -> list[Word]:
     kw = dict(word_timestamps=True, vad_filter=vad, condition_on_previous_text=False, beam_size=5,
               language=language or None, **(_LENIENT if lenient else _STRICT))
     if vad and lenient:
         kw["vad_parameters"] = {"threshold": 0.25, "min_silence_duration_ms": 700, "speech_pad_ms": 400}
     try:
-        segs, _ = model.transcribe(audio, **kw)
+        segs, info = model.transcribe(audio, **kw)
     except TypeError:                                 # an older faster-whisper without one of the optional arguments
         kw.pop("vad_parameters", None)
-        segs, _ = model.transcribe(audio, **kw)
-    return [(w.word.strip(), float(w.start), float(w.end)) for s in segs for w in (s.words or []) if w.word.strip()]
+        segs, info = model.transcribe(audio, **kw)
+    if heard is not None:                             # the language Whisper detected (known before the first segment is produced)
+        heard["language"] = getattr(info, "language", None)
+        heard["prob"] = getattr(info, "language_probability", None)
+    return [(w.word.strip(), float(w.start), float(w.end)) for s in segs if not (lenient and _invented(s))
+            for w in (s.words or []) if w.word.strip()]
 
 
 def loud_seconds(audio, floor_db: float = -48.0) -> list[bool]:
@@ -86,10 +99,18 @@ def _merge(words: list[Word], extra: list[Word]) -> list[Word]:
 
 def recognise(model, audio, language: str | None = None) -> list[Word]:
     """Best-effort transcript of one audio array: normal pass, then fill every audible-but-empty stretch with relaxed settings."""
-    words = _run_model(model, audio, vad=True, language=language)
+    heard: dict = {}
+    words = _run_model(model, audio, vad=True, language=language, heard=heard)
     length = len(audio) / SR
     loud = loud_seconds(audio)
+    # One language for the whole clip. Left to detect it again on every retry and gap, Whisper "hears" random languages in music,
+    # game sound and silence. Pin what the first pass detected (or what the user configured).
+    if not language and heard.get("language") and (words or (heard.get("prob") or 1.0) >= MIN_LANG_CONFIDENCE):
+        language = heard["language"]
     if not words:
+        if not language and heard.get("language"):
+            log.info("captions: no speech found and no confident language (%s, %.2f): treating as silence", heard["language"], heard.get("prob") or 0)
+            return []                                 # a low-confidence guess on noise: do not coax text out of it
         log.info("captions: no speech with the strict pass, retrying relaxed")
         words = _run_model(model, audio, vad=True, lenient=True, language=language) or \
             _run_model(model, audio, vad=False, lenient=True, language=language)
