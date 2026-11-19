@@ -1,0 +1,48 @@
+# Copy to config.toml and run:  python -m autoclip --config config.toml run <channel>
+# Only list what you want to change; everything else keeps its default.
+
+# --- how sensitive? ---
+mult = 2.0          # lower = more clips, higher = fewer/bigger (1.7 = very sensitive)
+min_users = 6       # at least this many DIFFERENT chatters in the window (raise to 12+ for big channels)
+warmup_s = 90       # time spent learning the channel's normal chat level before clipping
+
+# --- drafts and suggested trim ---
+cut_mode = "copy"       # "copy" = instant draft (recommended). "encode" = exact window but ~15 s of CPU per clip
+clip_len_s = 30         # every finished clip is exactly this long
+pre_s = 20              # draft context before the spike (free in copy mode)
+post_s = 12
+reaction_lag_s = 8      # chat reacts ~8 s after the moment; raise it if the 30 s window starts too late
+
+# --- captions ---
+# whisper_model = "small"   # tiny / base / small / medium
+
+# --- quality / speed ---
+quality = "best"                    # record the stream at its top quality (sharper clips). "720p60,720p,best" saves disk but looks soft
+encoder = "libx264"                 # "h264_nvenc" (NVIDIA), "h264_qsv" (Intel), "h264_amf" (AMD) = faster cuts
+vertical = "on_demand"              # "auto" also exports a 9:16 of every suggested trim (uses CPU/GPU)
+
+# --- several streams at once ---
+# cut_workers = 2            # 9:16 renders running at the same time, in TOTAL across all streams (raise it with a GPU encoder)
+# max_encode_backlog = 6     # this many renders already waiting -> new clips stay drafts (Export them in the review page)
+# draft_workers = 4          # draft cuts at the same time (cheap stream copies; they never wait for renders)
+# status_every_s = 60        # overview of all streams every N seconds (0 = off)
+
+# --- housekeeping ---
+out_dir = "clips"
+max_clips_gb = 20
+# buffer_dir = "D:/autoclip_buffer"  # put the 10-minute rolling buffer on a fast/large drive
+
+# bots = ["nightbot", "my_custom_bot"]   # replaces the built-in list, so include the defaults you still want
+
+# --- post text suggestions ---
+# hashtags = ["fyp", "viral", "streamer", "twitch", "clips"]
+# credit_line = true                       # "Clip from <streamer>: <link>" in the description
+# display_names = { kaicenat = "Kai Cenat" }
+
+# sharpen = 0.0              # 0 = off; 0.3-0.8 sharpens the webcam panel of vertical clips
+# --- extra signals ---
+# audio_assist = true        # loud moments make chat spikes easier to catch (never fires alone)
+# audio_boost_db = 8.0
+# auto_mult = true           # multiplier eases to 1.8 on big chats
+# --- finished clips also copied here (or set it in the review page: Folders) ---
+# export_dir = "D:/Clips"

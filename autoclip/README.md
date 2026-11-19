@@ -1,0 +1,174 @@
+# autoclip
+
+Watches **live** Twitch / YouTube streams, notices when chat explodes, and automatically cuts a clip
+around each moment. You review the clips afterwards in a local web page. Free, runs on your PC, no accounts or API keys.
+
+## Install (Windows, ~5 minutes)
+
+1. Install Python 3.11+ from python.org (tick **Add python.exe to PATH**).
+2. In PowerShell:
+   ```powershell
+   winget install Gyan.FFmpeg
+   winget install Streamlink.Streamlink
+   winget install yt-dlp.yt-dlp          # only needed for YouTube channel / @handle links
+   pip install chat-downloader           # only needed for YouTube
+   ```
+   Close and reopen PowerShell so the new tools are on PATH.
+3. In the project folder:
+   ```powershell
+   python -m autoclip doctor     # lists anything missing
+   python -m autoclip demo       # 1-minute offline self-test with fake video + chat
+   ```
+   If `demo` says PASSED, ffmpeg, cutting, detection and the review page all work on your machine.
+
+## Use
+
+```powershell
+python -m autoclip run shroud                               # Twitch channel (name or link)
+python -m autoclip run shroud xqc https://www.youtube.com/watch?v=VIDEOID   # several at once
+python -m autoclip review                                   # later: opens the review page
+```
+* The first **90 s** of each run is spent learning the channel's normal chat level; nothing is clipped yet.
+* Leave it running during the stream. **Ctrl+C** stops it cleanly: a moment that was just found is still cut (it is not lost), renders
+  already running are finished, and renders still waiting in line are skipped (their draft exists; press **Export** in the review page).
+* Clips land in `clips\<channel>\<date_time>\` as **drafts**: ~40 s of context around the moment, made by stream copy in
+  under a second (no CPU use, no quality loss). Nothing is encoded until you ask.
+* In the review page (ranked best-first) each draft opens already trimmed to a **suggested 30 s window**. Fine-tune with the
+  *start = player* / *end = player* buttons (the player loops your trim), tick **Vertical 9:16** and/or **Captions**, and press
+  **Export clip**: ONE encode does the exact trim + layout + captions. Then **Keep / Trash**; "Delete trashed files" frees disk.
+
+## Several streams at once
+`python -m autoclip run shroud xqc https://www.youtube.com/watch?v=VIDEOID` watches every stream at the same time (Twitch and YouTube can be
+mixed). Each stream gets its own recorder, chat reader and baseline, so a quiet channel and a huge one are judged separately. What is
+**shared** is the expensive part, so cost does not multiply with the number of streams:
+* **Draft cuts never wait.** A draft is a stream copy (milliseconds), done in its own lane. Before, drafts and 9:16 renders shared one
+  queue: when 4 streams spiked together, two drafts sat behind two long renders until their video had been deleted from the buffer, and
+  **2 of 4 clips were lost** (measured). Now all 4 are saved at once.
+* **9:16 renders share `cut_workers` slots (default 2) across ALL streams, best clip first.** If `max_encode_backlog` (6) renders are already
+  waiting, new clips simply stay drafts (logged); press **Export** for them in the review page.
+* **Cheaper renders:** frames are dropped to 30 fps *before* scaling/blurring instead of after (bit-identical picture, ~1.7x faster on a
+  60 fps stream), and the blurred background is computed at quarter size (~2.8x faster again; visually the same). Measured on 15 s of
+  1080p60 (4-core box, real defaults): the blurred layout went from **50.8 s to 10.4 s**. The webcam/gameplay *split* layout has no big blur,
+  so it only gains ~7% (10.2 s to 9.5 s).
+* Every `status_every_s` seconds (60) you get one overview: which streams are live, chat rate vs normal, spikes/clips, render queue.
+* The same channel listed twice is watched once; a typo in any target is reported before anything starts.
+* At start with 2+ streams it prints the disk (rolling buffer, ~0.7 GB per stream per 10 min) and bandwidth (~8 Mbit/s per stream at
+  `best`) you are asking for, and warns when the buffer drive is too small. Put `buffer_dir` on a big drive.
+* Idle cost is small: about 2% of one core per stream (almost all of it measuring audio loudness of each 4 s segment).
+Rule of thumb: the limits are your download speed and disk, not the program. Add `quality = "720p60,720p,best"` to `config.toml` to halve both
+(clips will be softer).
+
+## How it avoids the usual problems
+
+| Problem | What it does |
+|---|---|
+| One person, a bot, or `!command` spam fakes a spike | Counts **different chatters**, not messages. Ignores known bots and `!commands`. |
+| Raids | A raid notice mutes spike detection for 90 s and is excluded from the baseline. |
+| Quiet chats fire constantly | Needs a minimum number of chatters **and** `baseline + 3*sqrt(baseline)` (statistical noise guard). |
+| Huge chats never "spike" | Threshold is relative to that channel's own median, not a fixed number. |
+| Chat reacts after the moment | Clip starts 30 s early (`pre_s`). |
+| One long event = 5 duplicate clips | Spikes within 30 s merge into one clip; a very long spike is split at 60 s. |
+| Video and chat drift apart (ads, drops, reconnects) | Every video segment and chat message is stamped with **wall-clock** time, never stream-relative time. |
+| Stream drops / goes offline | Recorder reconnects with back-off and polls politely while offline; chat readers reconnect forever. |
+| Disk fills up | Rolling 10-minute buffer is auto-pruned (stream copy, no re-encode); stops cutting past `max_clips_gb`. |
+| CPU load on a gaming PC | Buffer and drafts are **never re-encoded** (a 48 s draft takes 0.2 s vs 16 s to encode: 70x faster). Only clips you export (and the optional automatic 9:16 renders) are encoded, one pass, bounded across all streams. Optional GPU encoder. |
+| Clips start too early / too late | Finds the second chat actually took off (not the window start: ~9 s tighter), then places a fixed 30 s window around it (lead-in + the chat peak always inside); you fine-tune in the player. |
+| Same moment clipped twice | A new clip overlapping an existing one by 60%+ is skipped. |
+| Windows quirks | No shell tricks, list-style subprocess args, paths with spaces/apostrophes tested, UTF-8 console so emotes cannot crash it. |
+| Orphaned ffmpeg processes | Shutdown is verified by tests: no leftover processes, buffer folder removed. |
+| Review page safety | Listens on `127.0.0.1` only, serves only `.mp4` inside the clips folder, rejects other websites' requests. |
+
+Loudness bonus: a clip scores up to +10 if the audio is louder after the moment than before it
+(streamer/game reacting), which filters chat-only false alarms.
+
+## Finding the moments (sensitivity)
+* A `config.toml` in the project folder is **loaded automatically** (no `--config` flag). The first line printed at start shows
+  which settings are in use; if it says "built-in defaults" your `config.toml` was not found.
+* **Chat spike**: unique chatters in 10 s vs the channel's own normal level. The multiplier is 2.0 and eases down to 1.8 on big chats.
+* **Loud moments help**: when the stream gets 8+ dB louder than normal (streamer screaming, game explosion), chat only needs to
+  be 1.35x normal. Loud audio alone never makes a clip (`audio_assist = false` turns this off).
+* **Near-misses are logged** (`near-miss: chat 1.7x normal (needed 1.9x)`): if you see many for moments you wanted, lower `mult`.
+  A session summary at the end counts spikes, near-misses, clips, skipped duplicates and failed cuts.
+* Everything is also written to `autoclip.log` in the clips folder: send that file when something looks wrong.
+* Window position: the 30 s window starts 15 s before chat took off. Use **◀ 5 s / 5 s ▶** in the review page to slide it.
+
+## Folders
+**📁 Folders** in the review page: pick where **finished clips** are copied (any folder, with a Browse dialog) and where drafts live.
+Saved in your user settings (`%APPDATA%\autoclip\settings.json`), so `git pull` never overwrites them. **📂** next to an export shows it in
+Explorer.
+
+## Sharing to TikTok / YouTube Shorts / Instagram Reels
+Export a clip (vertical, trimmed, captions as you like), open **Share**, pick a **method**, tick the platforms, **Share selected...**.
+You always get a confirmation first; nothing is opened or uploaded before you press OK. Safety rules: only exported clips can be shared,
+one invalid or not-connected platform blocks the whole request (nothing is uploaded), an already-posted platform is not posted again
+unless you tick "post again", and each result is recorded.
+
+* **Share assistant** (no setup): opens each platform's upload page, selects the file, copies the caption; you press Post.
+* **Post directly to my connected accounts** (free, official APIs): uploads for you. Set up once under **🔗 Accounts** (about 5 minutes
+  per platform, instructions are inside that window). Logins are kept in `%APPDATA%\autoclip\accounts.json` on your PC only.
+
+What each platform really allows (so there are no surprises):
+| | what happens | catch |
+|---|---|---|
+| **YouTube** | uploaded and published as a Short | Google can lock uploads from a brand-new API project to *private* until it audits the project; the app detects this and tells you, with a link to publish it in Studio. Set the consent screen to "In production" or the login expires after 7 days. Roughly 6 uploads/day on the default quota. |
+| **Instagram** | published as a Reel | needs a Professional (Creator/Business) account and a free Meta developer app; works on your own account without Meta app review. |
+| **TikTok** | **draft** in your TikTok inbox (you open the app and press Post) or a direct post | TikTok only allows *private* direct posts for apps it has not audited, so Draft is the default. TikTok setup is the least predictable of the three; the Share assistant is always there as a fallback. |
+
+These three uploaders were built from the platforms' published API behaviour and tested against a simulated server, not against your live
+accounts. If one of them reports an error, the message says why; use the Share assistant for that platform and tell me the message.
+
+## Vertical clips: webcam on top, gameplay below (Reels / TikTok / Shorts)
+Every clip is exported **automatically as a ready 1080x1920, 30 fps, exactly 30 s video**. Until you teach it where a streamer's
+webcam is, it uses a blurred full frame. Do this **once per streamer** (takes ~20 seconds):
+1. `python -m autoclip review`, then press **Set layout for <channel>** on any of that channel's clips.
+2. Drag the **red box** over the webcam and the **blue box** over the part of the game you want shown
+   (boxes keep the right shape automatically; drag the corner square to resize). Optional: **Auto-detect webcam**
+   (`pip install "opencv-python-headless>=4.8,<5"`).
+3. Press **Preview** to see the finished vertical frame, then **Save layout**. All future clips for that channel use it.
+   Press **Export clip** on older clips to re-render them with the new layout.
+Other options: whole screen on a blurred background, plain center crop, adjustable webcam/gameplay split (40-60%).
+
+**Subtitle position:** in the same editor, drag the **green box** on the vertical preview to where subtitles should appear
+(its height sets the text size; the sample text inside shows how it will look and wrap). Saved per streamer along with the layout.
+Without a saved box, captions sit on the line between webcam and gameplay.
+
+## Post text (title + description) for every clip
+Open **Post text** on any clip. Titles are built from what is specific to that clip: the phrase chat was spamming ("NO WAY", "KEKW"),
+how big the spike was, whether the streamer got loud, and which reaction it was (funny / shock / hype). Buttons:
+**↻ Other title** steps through six options, and fetches a brand-new set when they run out; **🔄 New ideas** makes a new set right away
+(titles already shown for that clip are never repeated); **🎧 From what is said** listens to the clip (needs `faster-whisper`, see Captions)
+and quotes the streamer's own words in the titles. The description gets a hook line (or the quote), a credit line and hashtags; text you
+edited yourself is never overwritten. These are rule-based suggestions, not AI-written copy.
+Set nicer names in `config.toml`:  `display_names = { kaicenat = "Kai Cenat" }`,  `hashtags = ["fyp", "gaming"]`,  `credit_line = false`.
+
+## Video quality
+The biggest factor is the quality the stream is **recorded** at: the default is now the stream's best (usually 1080p60), because a webcam
+is a small part of the screen and gets enlarged ~2-3x in a vertical clip. Measured on a test pattern: recording at 1080p instead of 720p
+raised the sharpness score of the webcam panel from 0.839 to 0.887 (SSIM). Exports use x264 `medium`, CRF 17. Each card shows the source
+resolution (clips recorded at 720p show a warning), and the layout editor shows how much each box is enlarged ("2.1x (ok)"; red above 2x:
+make the box bigger). New layouts show the whole gameplay frame (nothing cut off) instead of a tight crop; you can switch back in the editor.
+Optional `sharpen = 0.5` in `config.toml` sharpens the webcam panel (off by default: it did not improve the measured score, judge by eye).
+If you copied the old `config.example.toml`, the old `quality = "720p60,720p,480p,best"` line is replaced by `best` automatically.
+
+**Speed:** the encoder is chosen automatically (NVIDIA / Intel / AMD hardware encoder if it really works, else CPU), runs at
+below-normal priority so your game/stream never stutters, and loudness is normalized for social platforms.
+
+## Captions (optional, one-time setup)
+`pip install faster-whisper`, then tick **Captions** when exporting. First use downloads the speech model (~500 MB for `small`);
+a GPU is used automatically if available. Style: big bold uppercase, 1-3 words at a time, current word highlighted in yellow.
+Only the part you are exporting is transcribed, and stretches Whisper skipped although they are audible are retried with a more sensitive setting. If really nobody speaks there you get a clear message. Set `whisper_model = "base"` for speed
+or `"medium"` for accuracy.
+
+## Tuning
+See `config.example.toml`. Too many clips -> raise `mult` and `min_users`. Missing moments -> lower them.
+Clips start too late/early -> change `pre_s`. Always check the first few streams and adjust.
+
+## Limits (be aware)
+* Chat-based: moments nobody reacts to in chat are missed; clip *quality* still needs your review.
+* **YouTube chat uses an unofficial feed** (`chat-downloader`) and may break when YouTube changes it.
+* Twitch ads can briefly interrupt the video; only streamlink's behaviour applies. If the channel requires login/subscription, it can't be recorded.
+* Needs a live stream (no VODs) — for VODs use the chat-replay download instead.
+
+## Rules for other people's streams
+Recording for private review is fine; **publishing needs the streamer's permission** (Twitch/YouTube terms, and copyrighted
+music in streams can get your upload claimed). Credit the streamer, and check whether they allow clipping before you post.
