@@ -345,7 +345,7 @@ def test_autopilot_re_exports_with_your_trim_and_never_captions_without_speech(r
     write_json(style.learned_path(), {"default": {"trim": {"start_shift_s": -2.0, "end_shift_s": 1.0}, "captions": {"mode": "always"}}})
     made = []
 
-    def fake_export(cid, start, end, vertical, captions, by="you"):
+    def fake_export(cid, start, end, vertical, captions, by="you", **kw):
         p, m = rig.store.find(cid)
         (p.parent / "styled_v.mp4").write_bytes(b"x")
         with rig.store.lock:
@@ -456,7 +456,7 @@ def test_never_transcribed_is_unknown_not_silent(rig, monkeypatch):
     write_json(style.learned_path(), {"default": {"captions": {"mode": "speech"}}})
     made = []
 
-    def fake_export(cid, start, end, vertical, captions, by="you"):
+    def fake_export(cid, start, end, vertical, captions, by="you", **kw):
         p, m = rig.store.find(cid)
         (p.parent / "cc_v.mp4").write_bytes(b"x")
         with rig.store.lock:
