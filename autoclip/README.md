@@ -331,9 +331,23 @@ for that streamer the moment the campaign ends, reaches its cap or you set `budg
 
 ### Your voice-over and hook text (originality)
 Platform programmes pay more for clips with your own touch. In **Export**, open **Make it original**: type a **hook** (big text for the
-first 3 seconds) and **🎙 Record** a voice-over in the page or **Pick a file** (webm / ogg / mp3 / wav / m4a, up to 25 MB). Tick
+first 2.5 seconds) and **🎙 Record** a voice-over in the page or **Pick a file** (webm / ogg / mp3 / wav / m4a, up to 25 MB). Tick
 **Use my voice-over** and export: your voice starts with the clip and the stream sound goes quieter while you talk. Clips that have them
 are tagged on the card (🎙 / 🪝). The voice-over file is kept next to the clip and deleted with it (Done / Delete trashed files).
+
+**Hooks are made for you.** Leave the hook empty and every export (yours, Autopilot's and the automatic 9:16 render) gets one:
+- **Where it comes from:** with a free **Groq key** (press **Groq key…**, get one at console.groq.com) it is written from what the
+  streamer said. Without a key, or when Groq fails, it is picked from built-in templates in the clip's language (English, French,
+  Spanish, German, Portuguese; the caption language setting wins, else the transcript's words decide). Your own hook lines from your
+  learned style are tried first. Other languages without a key: type the hook yourself.
+- **Rules for every hook:** at most 7 words, makes people curious, and states nothing the clip cannot prove (words like *arrested,
+  died, leaked, official*, money amounts are refused). It is never one of your last 50 hooks.
+- **The look:** bold, outlined, top-centre, popping in. Four styles (white, yellow, red outline, dark on white) take turns.
+- **Where it goes:** inside the platforms' safe zone, never over the webcam panel, the captions or the ad-disclosure corner (the
+  disclosure keeps its own top-left corner).
+- **On the card:** edit the text, **↻ Regenerate**, pick a **style**, or tick **No hook**.
+
+The key is kept in `accounts.json` on this PC; the hook history is `hooks.json` in the style folder.
 
 ## Vertical clips: webcam on top, gameplay below (Reels / TikTok / Shorts)
 Every clip is exported **automatically as a ready 1080x1920, 30 fps, exactly 30 s video**. Until you teach it where a streamer's

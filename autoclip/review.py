@@ -17,7 +17,7 @@ from .config import Config
 from .captions import CaptionsUnavailable, build_ass, cached_words, transcribe, words_in_window
 from . import layout as lay
 import html
-from . import accounts, autopilot, autopilot_page, campaigns, campaigns_page, publish, settings, share, style, taste, zernio      # noqa: F401  (publish / zernio register the 'direct' / 'auto' sharing methods)
+from . import accounts, autopilot, autopilot_page, campaigns, campaigns_page, hooks, publish, settings, share, style, taste, zernio      # noqa: F401  (publish / zernio register the 'direct' / 'auto' sharing methods)
 from .cutter import export_clip, grab_frame, probe_size
 from .describe import suggest as suggest_description
 from .facecam import FacecamUnavailable, detect_facecam
@@ -256,7 +256,7 @@ function render(){
     const r2=el('div','row');
     for(const [k,label] of [['vertical','Vertical 9:16'],['captions','Captions']]){const l=el('label'),cb=el('input');cb.type='checkbox';cb.checked=t[k];cb.onchange=()=>{t[k]=cb.checked};l.append(cb,label);r2.append(l)}
     const ex=el('button','primary','Export clip'),exNote=el('div','note bad');exNote.style.display='none';
-    ex.onclick=async()=>{exPending.add(c.id);paintEx(c.id);const ok=await post('/api/export/start',{id:c.id,start:t.start,end:t.end,vertical:t.vertical,captions:t.captions,hook:t.hook||'',voiceover:!!(t.vo&&c.voiceover)});
+    ex.onclick=async()=>{exPending.add(c.id);paintEx(c.id);const ok=await post('/api/export/start',{id:c.id,start:t.start,end:t.end,vertical:t.vertical,captions:t.captions,hook:t.hookOff?'':(t.hook||'auto'),hook_style:t.hookStyle||'',voiceover:!!(t.vo&&c.voiceover)});
       exPending.delete(c.id);await load(false)};          // the server now owns the state: it flips back only when the file is really made
     r2.append(el('span','grow'),ex);b1.append(el('div','hint','Uses the clip range above. One encode: trim, 9:16 layout and captions together.'),r2,exNote,cpExportExtras(c,t));
     if(nx){const e=el('div','row');e.append(el('span','mut','Files:'));for(const x of c.exports){const l=el('a','file',(x.vertical?'9:16 ':'')+(x.captions?'CC ':'')+fmt(x.start)+'-'+fmt(x.end));l.href=fileUrl(c,x.file);l.target='_blank';
@@ -850,7 +850,7 @@ class Store:
             return {"state": j["state"], "message": j["message"], "since": j["since"]} if j else None
 
     def start_export(self, cid: str, start: float, end: float, vertical: bool, captions: bool, hook: str | None = None,
-                     voiceover: bool = False) -> dict:
+                     voiceover: bool = False, hook_style: str = "") -> dict:
         """Queue an export and return at once. The clip stays 'queued' / 'encoding' on the SERVER until the file really exists and is
         recorded, so the page shows the right button state after any redraw, reload or second tab. Bad requests fail here, not later."""
         p, m = self.find(cid)
@@ -865,15 +865,15 @@ class Store:
             self.jobs[cid] = job
             if self._export_pool is None:
                 self._export_pool = PriorityPool(max(1, self.cfg.cut_workers), "export")
-            self._export_pool.submit(0, self._run_export, cid, job, start, end, vertical, captions, hook, voiceover)
+            self._export_pool.submit(0, self._run_export, cid, job, start, end, vertical, captions, hook, voiceover, hook_style)
         return {"state": "queued"}
 
     def _run_export(self, cid: str, job: dict, start: float, end: float, vertical: bool, captions: bool, hook: str | None = None,
-                    voiceover: bool = False) -> None:
+                    voiceover: bool = False, hook_style: str = "") -> None:
         with self.job_lock:
             job["state"] = "encoding"
         try:
-            extra = {k: v for k, v in (("hook", hook), ("voiceover", voiceover)) if v}
+            extra = {k: v for k, v in (("hook", hook), ("voiceover", voiceover), ("hook_style", hook_style)) if v}
             self.export(cid, start, end, vertical, captions, **extra)   # records the export in the clip's file before returning
         except Exception as e:
             msg = str(e) if isinstance(e, (ValueError, CaptionsUnavailable, RuntimeError)) else f"export failed: {e}"
@@ -932,8 +932,18 @@ class Store:
             _write_json(p, m)
         return True
 
+    def suggest_hook(self, cid: str, start: float, end: float, avoid: list[str] | None = None) -> dict | None:
+        """A hook for this clip from its transcript (only words already heard: no speech-to-text run just for this)."""
+        p, m = self.find(cid)
+        if not p:
+            raise ValueError("clip not found")
+        words = words_in_window(cached_words(p.parent / m["file"]), start, end)
+        lang = hooks.language(words, getattr(self.cfg, "whisper_language", "") or None)
+        rules = style.load(m.get("channel"))
+        return hooks.suggest(words, lang, avoid, seed=cid, extra=(rules.get("body") or {}).get("hooks") or [])
+
     def export(self, cid: str, start: float, end: float, vertical: bool, captions: bool, by: str = "you",
-               hook: str | None = None, voiceover: bool = False) -> str:
+               hook: str | None = None, voiceover: bool = False, hook_style: str = "") -> str:
         """Precise trim (+ optional 9:16, + optional burned captions) in ONE encode. Returns the new file name.
         `by` = "you" or "autopilot": only your own exports teach your style."""
         p, m = self.find(cid)
@@ -947,7 +957,12 @@ class Store:
             if not v or Path(v).name != v or not (p.parent / v).is_file():
                 raise ValueError("record or pick a voice-over first")
             vo = p.parent / v
-        hook = " ".join(str(hook or "").split())[:120] or None
+        hook_src = "you"
+        if hook == "auto":                                         # made for you: Groq or templates, in the clip's language
+            got = self.suggest_hook(cid, start, end)
+            hook, hook_src = (got["text"], got["source"]) if got else (None, "")
+        hook = hooks.clean(hook) or None
+        hook_style = hook_style if hook_style in hooks.STYLE_NAMES else hooks.next_style()
         layout = LayoutStore(self.root).get(m["channel"]) if vertical else None
         cp = campaigns.plan(m, layout, vertical, self.cfg)          # a paid campaign: keep must_show in, burn the disclosure
         layout = cp["layout"]
@@ -961,7 +976,7 @@ class Store:
                                  "Move the trim, or export without captions.")
             ass = build_ass(words, start, end, vertical, self.cfg.caption_font, seam=(layout or {}).get("mode") == "split",
                             box=(layout or {}).get("captions"))
-        ass = campaigns.burn(cp, ass, vertical, self.cfg, end - start, m, hook=hook)
+        ass = campaigns.burn(cp, ass, vertical, self.cfg, end - start, m, hook=hook, hook_style=hook_style)
         name = (f"{src.stem}_{int(start * 10)}-{int(end * 10)}{'_v' if vertical else ''}{'_cc' if captions else ''}"
                 f"{'_ad' if cp['record'] else ''}{'_hk' if hook else ''}{'_vo' if vo else ''}.mp4")
         errs: list[str] = []
@@ -978,8 +993,11 @@ class Store:
                 {"file": name, "start": start, "end": end, "vertical": vertical, "captions": captions, "copy": copy,
                  "layout": (layout or {}).get("mode", self.cfg.vertical_mode) if vertical else None, "by": by,
                  **({"campaign": cp["record"]} if cp["record"] else {}),
-                 **({"originality": {"voiceover": bool(vo), "hook": bool(hook)}} if vo or hook else {})}]
+                 **({"originality": {"voiceover": bool(vo), "hook": bool(hook)}} if vo or hook else {}),
+                 **({"hook": {"text": hook, "style": hook_style, "source": hook_src}} if hook else {})}]
             _write_json(p, m)
+        if hook:
+            hooks.remember(hook, hook_style, hook_src)
         if by == "you":
             style.record(m, "export", "none", "you", p.parent)
         return name
@@ -1052,7 +1070,7 @@ def make_handler(store: Store):
                 return self._send(200, json.dumps(store.list()).encode())
             if path == "/api/settings":
                 return self._send(200, json.dumps({"out_dir": str(store.root), "export_dir": store.cfg.export_dir,
-                                                   "settings_file": str(settings.path())}).encode())
+                                                   "settings_file": str(settings.path()), "groq": bool(hooks.groq_key())}).encode())
             if path == "/api/share/providers":
                 return self._send(200, json.dumps({"providers": share.providers_info(), "platforms": share.PLATFORMS,
                                                    "connected": {p: accounts.connected(p) for p in share.PLATFORMS},
@@ -1158,7 +1176,8 @@ def make_handler(store: Store):
                 try:
                     return self._send(200, json.dumps(store.start_export(str(body.get("id")), float(body["start"]), float(body["end"]),
                                                                          bool(body.get("vertical")), bool(body.get("captions")),
-                                                                         str(body.get("hook") or ""), bool(body.get("voiceover")))).encode())
+                                                                         str(body.get("hook") or ""), bool(body.get("voiceover")),
+                                                                         str(body.get("hook_style") or ""))).encode())
                 except (ValueError, KeyError) as e:
                     return self._send(400, str(e).encode(), "text/plain")
             elif path == "/api/export/dismiss":
@@ -1279,6 +1298,22 @@ def make_handler(store: Store):
                     return self._send(500, f"could not learn: {e}".encode(), "text/plain")
             elif path == "/api/autopilot/hold":
                 ok = autopilot.Autopilot(store).hold(str(body.get("id")))
+            elif path == "/api/hook/suggest":
+                try:
+                    got = store.suggest_hook(str(body.get("id")), float(body["start"]), float(body["end"]),
+                                             [str(x) for x in body.get("avoid") or []][:50])
+                    return self._send(200, json.dumps(got or {"text": "", "source": "none"}, ensure_ascii=False).encode())
+                except (ValueError, KeyError, TypeError) as e:
+                    return self._send(400, str(e).encode(), "text/plain")
+            elif path == "/api/hook/key":
+                k = "".join(str(body.get("key") or "").split())
+                if k and not re.fullmatch(r"[A-Za-z0-9_-]{20,200}", k):
+                    return self._send(400, b"that does not look like a Groq key (it starts with gsk_)", "text/plain")
+                if k:
+                    accounts.update("groq", api_key=k)
+                else:
+                    accounts.clear("groq")
+                ok = True
             elif path == "/api/voiceover":
                 try:
                     return self._send(200, json.dumps(store.save_voiceover(str(body.get("id")), body.get("data"), body.get("ext"))).encode())

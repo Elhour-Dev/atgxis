@@ -463,12 +463,12 @@ class Autopilot:
                 if not _latest_vertical(p, m) and getattr(self.store.cfg, "vertical", "auto") == "auto" and now - _created(m) < EXPORT_WAIT_S:
                     return None                                    # the recorder is probably still rendering the vertical version
                 try:
-                    self.store.export(cid, start, end, True, caps, by="autopilot")
+                    self.store.export(cid, start, end, True, caps, by="autopilot", hook="auto")
                 except Exception as e:                             # no speech after all / no speech-to-text: post it without captions
                     if not caps or not (isinstance(e, ValueError) or type(e).__name__ == "CaptionsUnavailable"):
                         raise
                     caps = False
-                    self.store.export(cid, start, end, True, False, by="autopilot")
+                    self.store.export(cid, start, end, True, False, by="autopilot", hook="auto")
                 p2, m2 = self.store.find(cid)
                 ex = _latest_vertical(p2, m2, (start, end, caps if want[2] is not None else None) if want else None, camp) if p2 else None
                 m = m2 or m

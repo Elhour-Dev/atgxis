@@ -26,7 +26,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from . import settings
+from . import hooks, settings
 
 log = logging.getLogger("autoclip.campaigns")
 
@@ -39,7 +39,6 @@ DEADLINE_S = 30 * 60                                      # campaigns want the l
 WARN_S = 25 * 60                                          # the page turns the row red from here
 FEE = 0.9                                                 # the platform keeps 10%
 DISCLOSURE_S = 3.0
-HOOK_S = 3.0
 AD_TAG = "#ad"
 FLAG_HELP = {"tiktok": "not set: switch on Content disclosure > Paid partnership in TikTok",
              "youtube": "not set: tick 'Includes paid promotion' in YouTube Studio",
@@ -574,8 +573,10 @@ _FORMAT = ("Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,Outline
 
 
 def overlay_ass(base: str | None, vertical: bool, font: str, dur: float, disclosure: str | None = None,
-                hook: str | None = None, handle: str | None = None) -> str | None:
-    """Captions (base, may be None) plus the burned-in disclosure (first 3 s), hook text (first 3 s) and @handle (whole clip)."""
+                hook: str | None = None, handle: str | None = None, hook_style: str = "pop",
+                protected: list | None = None) -> str | None:
+    """Captions (base, may be None) plus the burned-in disclosure (first 3 s, top-left corner), hook text (first 2.5 s, top-centre,
+    kept off the disclosure / handle corner band and off every `protected` (y0, y1) band such as the facecam) and @handle (whole clip)."""
     disclosure, hook, handle = _ass_text(disclosure), _ass_text(hook), _ass_text(handle)
     if not (disclosure or hook or handle):
         return base
@@ -584,11 +585,9 @@ def overlay_ass(base: str | None, vertical: bool, font: str, dur: float, disclos
         mx, my = re.search(r"PlayResX:\s*(\d+)", base), re.search(r"PlayResY:\s*(\d+)", base)
         W, H = (int(mx.group(1)) if mx else W), (int(my.group(1)) if my else H)
     font = re.sub(r"[,\r\n]", "", font or "Arial") or "Arial"
-    s1, s2, s3 = round(H * 0.032), round(H * 0.045), round(H * 0.028)
+    s1, s3 = round(H * 0.032), round(H * 0.028)
     styles = (f"Style: Disc,{font},{s1},&H00FFFFFF,&H00FFFFFF,&H80000000,&H80000000,-1,0,0,0,100,100,0,0,3,{max(4, s1 // 4)},0,7,"
               f"{round(W * 0.04)},{round(W * 0.04)},{round(H * 0.035)},1\n"
-              f"Style: Hook,{font},{s2},&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,{max(4, s2 // 12)},2,8,"
-              f"{round(W * 0.06)},{round(W * 0.06)},{round(H * 0.13)},1\n"
               f"Style: Handle,{font},{s3},&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,{max(3, s3 // 10)},1,9,"
               f"{round(W * 0.04)},{round(W * 0.04)},{round(H * 0.035)},1\n")
     end = max(dur, 0.5)
@@ -596,7 +595,10 @@ def overlay_ass(base: str | None, vertical: bool, font: str, dur: float, disclos
     if disclosure:
         ev += f"Dialogue: 2,{_ts(0)},{_ts(min(DISCLOSURE_S, end))},Disc,,0,0,0,,{disclosure}\n"
     if hook:
-        ev += f"Dialogue: 2,{_ts(0)},{_ts(min(HOOK_S, end))},Hook,,0,0,0,,{hook}\n"
+        corner = (0.0, round(H * 0.035) + max(s1, s3) * 2.2) if (disclosure or handle) else None
+        hs, hd = hooks.ass_event(hook, hook_style, W, H, list(protected or []) + ([corner] if corner else []), end, font)
+        styles += hs
+        ev += hd
     if handle:
         ev += f"Dialogue: 1,{_ts(0)},{_ts(end)},Handle,,0,0,0,,{handle}\n"
     if base and "\n[Events]" in base:
@@ -623,15 +625,34 @@ def plan(meta: dict, layout: dict | None, vertical: bool, cfg, now: float | None
     return {"campaign": c, "layout": layout, "record": rec}
 
 
-def burn(p: dict, base_ass: str | None, vertical: bool, cfg, dur: float, meta: dict, hook: str | None = None) -> str | None:
-    """The ASS text for an export: captions + campaign disclosure / handle + your hook text."""
+def protected_bands(layout: dict | None, vertical: bool, captions: bool) -> list[tuple[float, float]]:
+    """Rows of the finished frame (y0, y1 in pixels) the hook must not cover: the facecam panel and the captions."""
+    H = 1920 if vertical else 1080
+    out: list[tuple[float, float]] = []
+    mode = (layout or {}).get("mode")
+    if vertical and mode == "split":
+        out.append((0.0, H * float(layout.get("split", 0.5))))
+    if captions:
+        from .captions import caption_geometry
+        g = caption_geometry(vertical, mode == "split", (layout or {}).get("captions") if vertical else None)
+        if g["an"] == 5:                                   # centred on cy
+            out.append((g["cy"] - g["size"] * 1.4, g["cy"] + g["size"] * 1.4))
+        else:                                              # bottom-anchored at cy, up to 2 lines above it
+            out.append((g["cy"] - g["size"] * 2.6, g["cy"] + g["size"] * 0.3))
+    return out
+
+
+def burn(p: dict, base_ass: str | None, vertical: bool, cfg, dur: float, meta: dict, hook: str | None = None,
+         hook_style: str = "pop", protected: list | None = None) -> str | None:
+    """The ASS text for an export: captions + campaign disclosure / handle + your hook text (never over the facecam / captions)."""
     c = p.get("campaign")
     handle = None
     if c and c["rules"]["must_show"] == "handle":
         from .describe import mention
         handle = mention(meta, cfg) or ("@" + str(meta.get("channel", "")))
+    bands = protected_bands(p.get("layout"), vertical, bool(base_ass)) + list(protected or [])
     return overlay_ass(base_ass, vertical, getattr(cfg, "caption_font", "Arial"), dur,
-                       c["rules"]["disclosure"] if c else None, hook, handle)
+                       c["rules"]["disclosure"] if c else None, hook, handle, hook_style, bands)
 
 
 # ---------------------------------------------------------------------------------------------------- post text + pre-post check

@@ -232,7 +232,8 @@ def test_disclosure_hook_and_handle_are_burned_in_and_merged_with_captions():
     ass = campaigns.overlay_ass(None, True, "Arial", 30, disclosure="Ad", hook="{\\b1}Wait\nfor it", handle="@fav")
     assert "PlayResY: 1920" in ass and "Dialogue: 2,0:00:00.00,0:00:03.00,Disc,,0,0,0,,Ad" in ass
     hook = next(line for line in ass.splitlines() if ",Hook," in line)
-    assert hook.endswith(",,b1Wait for it") and "\\" not in hook and "{" not in hook   # no ASS override tricks from typed text
+    typed = hook.split("}", 1)[1]                                                     # after our own pop-in tags
+    assert typed == "b1Wait for it" and hook.count("{") == 1 and ",0:00:02.50,Hook," in hook   # no ASS override tricks from typed text
     assert "Dialogue: 1,0:00:00.00,0:00:30.00,Handle" in ass
     from autoclip.captions import build_ass
     cap = build_ass([("hello", 11.0, 11.5), ("there", 11.5, 12.0)], 10.0, 20.0, True)

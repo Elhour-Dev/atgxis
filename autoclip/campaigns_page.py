@@ -28,9 +28,24 @@ function cpBadge(c){
   return box}
 
 function cpExportExtras(c,t){
-  const box=el('details','fine');box.open=!!openSt.get(c.id+'og');box.ontoggle=()=>openSt.set(c.id+'og',box.open);
+  const box=el('details','fine');box.open=!!openSt.get(c.id+'og');
   const vo=c.voiceover;box.append(el('summary',null,'Make it original: hook text + your voice-over'+(vo?' 🎙':'')));
-  const hk=el('input');hk.type='text';hk.maxLength=120;hk.placeholder='Hook text, shown big for the first 3 seconds (optional)';hk.value=t.hook||'';hk.oninput=()=>{t.hook=hk.value};hk.style.cssText='width:100%;box-sizing:border-box';
+  const hrow=el('div','row'),hk=el('input');hk.type='text';hk.maxLength=120;hk.placeholder='Hook: 7 words max, first 2.5 s. Empty = one is made for you at export';hk.value=t.hook||'';hk.oninput=()=>{t.hook=hk.value;t.hookSrc='you';hn.textContent=''};hk.style.cssText='flex:1;min-width:180px';
+  const hn=el('span','mut',t.hookSrc&&t.hookSrc!=='you'?'('+t.hookSrc+')':'');
+  const rg=el('button','sm','↻ Regenerate');rg.title='Another hook from what the streamer said (Groq) or from the templates';
+  const sugg=async()=>{rg.disabled=true;rg.textContent='…';const r=await jpost('/api/hook/suggest',{id:c.id,start:t.start,end:t.end,avoid:t.hookSeen||[]});rg.disabled=!!t.hookOff;rg.textContent='↻ Regenerate';
+    if(!r.ok){alert(await r.text());return}const d=await r.json();if(!d.text){hn.textContent='No new hook for this language: type one';return}
+    t.hookSeen=(t.hookSeen||[]).concat([d.text]);t.hook=d.text;t.hookSrc=d.source;hk.value=d.text;hn.textContent='('+d.source+')'};
+  rg.onclick=sugg;
+  const sty=el('select');sty.title='Hook look. They take turns unless you pick one';for(const [v,l] of [['','Style: next in turn'],['pop','White'],['yellow','Yellow'],['red','Red outline'],['ink','Dark on white']]){const o=el('option',null,l);o.value=v;sty.append(o)}
+  sty.value=t.hookStyle||'';sty.onchange=()=>{t.hookStyle=sty.value};
+  const off=el('label'),ocb=el('input');ocb.type='checkbox';ocb.checked=!!t.hookOff;off.append(ocb,'No hook');
+  const dis=()=>{hk.disabled=rg.disabled=sty.disabled=!!t.hookOff};ocb.onchange=()=>{t.hookOff=ocb.checked;dis()};dis();
+  const gk=el('button','sm','Groq key…');gk.title='Optional: a free key from console.groq.com writes hooks from what the streamer said';
+  gk.onclick=async()=>{const k=prompt('Paste your free Groq API key (console.groq.com, API Keys). It stays on this PC. Leave empty to remove it.');if(k===null)return;
+    const r=await jpost('/api/hook/key',{key:k});alert(r.ok?(k.trim()?'Saved: new hooks are written by Groq.':'Removed: hooks come from the templates.'):await r.text())};
+  hrow.append(hk,rg,sty,off,gk,hn);
+  box.ontoggle=()=>{openSt.set(c.id+'og',box.open);if(box.open&&!t.hook&&!t.hookOff)sugg()};
   const row=el('div','row'),st=el('span','mut',vo?'Voice-over saved ('+Math.round(vo.size/1024)+' KB)':'No voice-over yet');
   const use=el('label'),cb=el('input');cb.type='checkbox';cb.checked=!!(t.vo&&vo);cb.disabled=!vo;cb.onchange=()=>{t.vo=cb.checked};use.append(cb,'Use my voice-over (the stream sound goes quieter while I talk)');
   const up=async(blob,ext)=>{if(blob.size>25*1024*1024){alert('The voice-over must be 25 MB or less.');return}st.textContent='Saving…';
@@ -47,7 +62,7 @@ function cpExportExtras(c,t){
       up(new Blob(chunks,{type}),type.includes('ogg')?'ogg':type.includes('mp4')?'m4a':'webm')};
     rec.start();rb.textContent='■ Stop recording';st.textContent='Recording… talk over the clip, then press Stop'};
   const del=el('button','sm','Remove');del.hidden=!vo;del.onclick=async()=>{if(await post('/api/voiceover/delete',{id:c.id})){t.vo=false;load(true)}};
-  row.append(rb,pb,pick,del,st);box.append(hk,row,use,el('div','hint','The voice-over starts with the clip. Both are burned into the next export, and the clip is tagged so you can see which clips have them.'));
+  row.append(rb,pb,pick,del,st);box.append(hrow,row,use,el('div','hint','The voice-over starts with the clip. Both are burned into the next export, and the clip is tagged so you can see which clips have them.'));
   return box}
 
 async function openCampaigns(){

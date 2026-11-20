@@ -192,7 +192,7 @@ def test_old_clips_are_not_posted(rig):
 def test_it_waits_for_the_recorders_vertical_and_makes_one_itself_when_that_is_not_coming(rig, monkeypatch):
     made = []
 
-    def fake_export(cid, start, end, vertical, captions, by="you"):
+    def fake_export(cid, start, end, vertical, captions, by="you", **kw):
         p, m = rig.store.find(cid)
         (p.parent / "made_v.mp4").write_bytes(b"x")
         with rig.store.lock:
