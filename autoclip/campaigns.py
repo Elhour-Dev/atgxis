@@ -574,7 +574,7 @@ _FORMAT = ("Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,Outline
 
 def overlay_ass(base: str | None, vertical: bool, font: str, dur: float, disclosure: str | None = None,
                 hook: str | None = None, handle: str | None = None, hook_style: str = "pop",
-                protected: list | None = None) -> str | None:
+                protected: list | None = None, info: dict | None = None) -> str | None:
     """Captions (base, may be None) plus the burned-in disclosure (first 3 s, top-left corner), hook text (first 2.5 s, top-centre,
     kept off the disclosure / handle corner band and off every `protected` (y0, y1) band such as the facecam) and @handle (whole clip)."""
     disclosure, hook, handle = _ass_text(disclosure), _ass_text(hook), _ass_text(handle)
@@ -596,9 +596,12 @@ def overlay_ass(base: str | None, vertical: bool, font: str, dur: float, disclos
         ev += f"Dialogue: 2,{_ts(0)},{_ts(min(DISCLOSURE_S, end))},Disc,,0,0,0,,{disclosure}\n"
     if hook:
         corner = (0.0, round(H * 0.035) + max(s1, s3) * 2.2) if (disclosure or handle) else None
-        hs, hd = hooks.ass_event(hook, hook_style, W, H, list(protected or []) + ([corner] if corner else []), end, font)
-        styles += hs
-        ev += hd
+        got = hooks.ass_event(hook, hook_style, W, H, list(protected or []) + ([corner] if corner else []), end, font)
+        if got:
+            styles += got[0]
+            ev += got[1]
+        if info is not None:
+            info["hook"] = bool(got)                       # False: no room off the facecam / captions / disclosure
     if handle:
         ev += f"Dialogue: 1,{_ts(0)},{_ts(end)},Handle,,0,0,0,,{handle}\n"
     if base and "\n[Events]" in base:
@@ -643,7 +646,7 @@ def protected_bands(layout: dict | None, vertical: bool, captions: bool) -> list
 
 
 def burn(p: dict, base_ass: str | None, vertical: bool, cfg, dur: float, meta: dict, hook: str | None = None,
-         hook_style: str = "pop", protected: list | None = None) -> str | None:
+         hook_style: str = "pop", protected: list | None = None, info: dict | None = None) -> str | None:
     """The ASS text for an export: captions + campaign disclosure / handle + your hook text (never over the facecam / captions)."""
     c = p.get("campaign")
     handle = None
@@ -652,7 +655,7 @@ def burn(p: dict, base_ass: str | None, vertical: bool, cfg, dur: float, meta: d
         handle = mention(meta, cfg) or ("@" + str(meta.get("channel", "")))
     bands = protected_bands(p.get("layout"), vertical, bool(base_ass)) + list(protected or [])
     return overlay_ass(base_ass, vertical, getattr(cfg, "caption_font", "Arial"), dur,
-                       c["rules"]["disclosure"] if c else None, hook, handle, hook_style, bands)
+                       c["rules"]["disclosure"] if c else None, hook, handle, hook_style, bands, info)
 
 
 # ---------------------------------------------------------------------------------------------------- post text + pre-post check

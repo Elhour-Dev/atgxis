@@ -174,6 +174,8 @@ def plan(w: dict, dur: float, layout: dict | None, res, opts: dict, seed: str, m
         return out
     room = {k: quality.max_zoom(v) for k, v in quality.panels(layout, (int(res[0]), int(res[1]))).items()}
     whole = must_show in ("overlay", "handle")                    # the full frame must stay visible: no crop moves at all
+    if must_show == "facecam" and mode != "split":
+        whole = True                                              # the webcam is somewhere in the full frame: keep all of it
     if must_show == "facecam":
         room["face"] = 1.0                                        # the webcam must stay whole
     if mode == "split" and layout.get("game_fit") == "blur":

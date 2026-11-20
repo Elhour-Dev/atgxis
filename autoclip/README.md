@@ -347,10 +347,12 @@ are tagged on the card (🎙 / 🪝). The voice-over file is kept next to the cl
   Spanish, German, Portuguese; the caption language setting wins, else the transcript's words decide). Your own hook lines from your
   learned style are tried first. Other languages without a key: type the hook yourself.
 - **Rules for every hook:** at most 7 words, makes people curious, and states nothing the clip cannot prove (words like *arrested,
-  died, leaked, official*, money amounts are refused). It is never one of your last 50 hooks.
+  died, leaked, official*, money amounts are refused). A made-for-you hook is never one of your last 50 (each language has more than
+  50 built-in ones). A hook you type must follow the first two rules too; re-using your own is fine.
 - **The look:** bold, outlined, top-centre, popping in. Four styles (white, yellow, red outline, dark on white) take turns.
 - **Where it goes:** inside the platforms' safe zone, never over the webcam panel, the captions or the ad-disclosure corner (the
-  disclosure keeps its own top-left corner).
+  disclosure keeps its own top-left corner). When space is tight it gets smaller; if it still cannot fit, no hook is burned (and
+  the export is not counted as having one).
 - **On the card:** edit the text, **↻ Regenerate**, pick a **style**, or tick **No hook**.
 
 The key is kept in `accounts.json` on this PC; the hook history is `hooks.json` in the style folder.

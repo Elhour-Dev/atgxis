@@ -179,3 +179,9 @@ def test_store_export_records_the_reframe_and_preview_matches(loud_clip, tmp_pat
     assert "_rf" not in name2 and json.loads((d / "c.clip.json").read_text())["exports"][-1]["reframe"]["applied"] is False
     old = store.set_reframe("ch/s/c", {"on": True})["seed"]
     assert store.set_reframe("ch/s/c", {"shuffle": True})["seed"] != old
+
+
+def test_facecam_must_show_on_a_full_frame_layout_means_no_zoom_at_all():
+    for mode in ("blur", "crop"):
+        p = reframe.plan(sig(30, peaks_at=(8.0, 20.0)), 30, {"mode": mode}, (1920, 1080), ALL, "x", must_show="facecam")
+        assert p["zooms"] == [] and p["track"] is None

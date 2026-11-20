@@ -38,6 +38,26 @@ TEMPLATES = {
     "pt": ["Espera só…", "Olha o que acontece depois", "O chat não acreditou nisso", "Fica até o final",
            "Como isso aconteceu?", "Você precisa ver isso", "Esse momento explodiu o chat", "Repara bem nisso"],
 }
+# two-part hooks ("Wait for it… chat lost it"): with the singles above, more than 50 per language, so the last-50 rule never runs dry
+OPENERS = {
+    "en": ["Wait for it…", "Watch closely…", "Don't scroll…", "Keep watching…", "Sound on…", "Look closer…", "Stay tuned…"],
+    "fr": ["Attends…", "Regarde bien…", "Ne scrolle pas…", "Reste jusqu'au bout…", "Monte le son…", "Regarde le chat…", "Observe bien…"],
+    "es": ["Espera…", "Mira bien…", "No deslices…", "Quédate al final…", "Sube el volumen…", "Mira el chat…", "Atento…"],
+    "de": ["Wartet ab…", "Schau genau hin…", "Nicht weiterscrollen…", "Bleib dran…", "Ton an…", "Pass auf…", "Achtung…"],
+    "pt": ["Espera…", "Olha bem…", "Não passa…", "Fica até o fim…", "Aumenta o som…", "Olha o chat…", "Atenção…"],
+}
+ENDINGS = {
+    "en": ["this gets wild", "chat lost it", "then this happened", "the ending though", "you'll see why", "nobody saw that coming",
+           "it only gets better"],
+    "fr": ["ça part loin", "le chat a craqué", "et là, surprise", "la fin est folle", "tu vas comprendre", "personne ne s'y attendait",
+           "ça devient fou"],
+    "es": ["esto se descontrola", "el chat explotó", "y entonces pasó esto", "el final es otra cosa", "ya verás por qué",
+           "nadie lo esperaba", "se pone mejor"],
+    "de": ["das eskaliert", "der Chat rastet aus", "dann passiert das", "erst das Ende", "du wirst sehen", "keiner hat's erwartet",
+           "es wird besser"],
+    "pt": ["isso fica louco", "o chat surtou", "e aí aconteceu isso", "o final é outra coisa", "você vai ver", "ninguém esperava",
+           "só melhora"],
+}
 QUOTE_TEMPLATES = {          # {q} = a few words the streamer really said
     "en": ['"{q}"… then this happened', 'Wait until "{q}"'],
     "fr": ['"{q}"… et là', 'Attends le "{q}"'],
@@ -75,6 +95,12 @@ def norm(text: str) -> str:
 def clean(text: str) -> str:
     """One line, no characters that the subtitle renderer would read as commands."""
     return " ".join(re.sub(r"[{}\\\r\n]", " ", str(text or "")).split()).strip(" -–—")[:120]
+
+
+def pool(lang: str) -> list[str]:
+    """Every built-in hook for a language that obeys the rules (singles, then two-part ones)."""
+    two = [f"{a} {b}" for a in OPENERS.get(lang, []) for b in ENDINGS.get(lang, [])]
+    return [h for h in TEMPLATES.get(lang, []) + two if problem(h) is None]
 
 
 def problem(text: str, recent: list[str] | tuple = ()) -> str | None:
@@ -160,8 +186,11 @@ def _groq(transcript: str, lang: str, avoid: list[str], key: str, http=None) -> 
                             "messages": [{"role": "user", "content": prompt}]}, timeout=15)
     if st != 200:
         raise RuntimeError(f"Groq answered {st}")
-    text = json.loads(raw)["choices"][0]["message"]["content"]
-    return [re.sub(r"^\s*(\d+[.)]|[-*•])\s*", "", ln).strip().strip('"').strip() for ln in str(text).splitlines() if ln.strip()]
+    lines = [ln for ln in str(json.loads(raw)["choices"][0]["message"]["content"]).splitlines() if ln.strip()]
+    listed = [ln for ln in lines if re.match(r"^\s*(\d+[.)]|[-*•])\s+", ln)]
+    lines = listed or lines                                   # a numbered list: its items only, never "Here are 6 hooks:"
+    out = [re.sub(r"^\s*(\d+[.)]|[-*•])\s*", "", ln).strip().strip('"').strip() for ln in lines]
+    return [h for h in out if h and not h.endswith(":") and not re.match(r"(?i)^(here|sure|okay|ok)\b", h)]
 
 
 def _quote(words: list) -> str | None:
@@ -199,37 +228,51 @@ def suggest(words: list | None, lang: str, avoid: list[str] | None = None, seed:
     yours = [x for x in extra or [] if language(None, None, x) == lang]
     q = _quote(words or [])
     built = [t.format(q=q) for t in QUOTE_TEMPLATES.get(lang, [])] if q else []
-    pool = list(TEMPLATES.get(lang, []))
+    every = pool(lang)
     rng.shuffle(built)
-    rng.shuffle(pool)
-    for src, items in (("yours", yours), ("template", built + pool)):
+    rng.shuffle(every)
+    for src, items in (("yours", yours), ("template", built + every)):
         for h in items:
             if not problem(h, recent):
                 return {"text": clean(h), "source": src, "lang": lang}
+    if every:                                   # only if every built-in hook was used lately: the one used longest ago
+        used = [norm(t) for t in recent_texts()]
+        skip = {norm(a) for a in avoid or []}
+        left = [h for h in every if norm(h) not in skip] or every
+        h = min(left, key=lambda x: used.index(norm(x)) if norm(x) in used else -1)
+        return {"text": clean(h), "source": "template", "lang": lang}
     return None
 
 
 # ---------------------------------------------------------------------------------------------------- burning it in
-def place(W: int, H: int, protected: list[tuple[float, float]], size: int) -> int:
+def place(W: int, H: int, protected: list[tuple[float, float]], size: int) -> int | None:
     """Top y (pixels) for a hook block of 2 lines at `size`: the highest spot inside the safe zone (below the platform's top bar
-    and above its bottom buttons) that does not touch any protected band (y0, y1): facecam, captions, disclosure, handle."""
+    and above its bottom buttons) that does not touch any protected band (y0, y1): facecam, captions, disclosure, handle.
+    None when there is no such spot."""
     block = int(size * 2.5)
     top, bottom = int(H * 0.09), int(H * 0.78)
-    for y in range(top, bottom - block, max(4, H // 200)):
+    for y in range(top, bottom - block + 1, max(4, H // 200)):
         if all(y + block <= a or y >= b for a, b in protected):
             return y
-    return top
+    return None
 
 
 def ass_event(text: str, style_name: str, W: int, H: int, protected: list[tuple[float, float]], dur: float,
-              font: str = "Arial") -> tuple[str, str]:
-    """(style line, dialogue line) for the hook: bold, outlined, top-centre, pop-in, 0-2.5 s."""
+              font: str = "Arial") -> tuple[str, str] | None:
+    """(style line, dialogue line) for the hook: bold, outlined, top-centre, pop-in, 0-2.5 s. Smaller when space is tight;
+    None when it cannot be placed without covering the facecam, captions or disclosure (then no hook is burned)."""
     fill, edge = STYLES.get(style_name, STYLES["pop"])
-    size = round(H * (0.05 if H > W else 0.065))
-    y = place(W, H, protected, size)
+    y = None
+    for k in (1.0, 0.8, 0.62):
+        size = round(H * (0.05 if H > W else 0.065) * k)
+        y = place(W, H, protected, size)
+        if y is not None:
+            break
+    if y is None:
+        return None
     style = (f"Style: Hook,{font},{size},{fill},{fill},{edge},&H64000000,-1,0,0,0,100,100,0,0,1,{max(5, size // 9)},2,8,"
              f"{round(W * 0.06)},{round(W * 0.06)},0,1\n")
-    pop = "{\\an8\\pos(%d,%d)\\fscx40\\fscy40\\t(0,140,\\fscx112\\fscy112)\\t(140,240,\\fscx100\\fscy100)\\fad(0,180)}" % (W // 2, y)
+    pop = "{\\an8\\q0\\pos(%d,%d)\\fscx40\\fscy40\\t(0,140,\\fscx112\\fscy112)\\t(140,240,\\fscx100\\fscy100)\\fad(0,180)}" % (W // 2, y)
     end = min(HOOK_S, max(dur, 0.5))
     s = f"{int(end // 3600)}:{int(end % 3600 // 60):02d}:{end % 60:05.2f}"
     return style, f"Dialogue: 3,0:00:00.00,{s},Hook,,0,0,0,,{pop}{clean(text)}\n"

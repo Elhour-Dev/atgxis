@@ -258,7 +258,7 @@ function render(){
     const r2=el('div','row');
     for(const [k,label] of [['vertical','Vertical 9:16'],['captions','Captions']]){const l=el('label'),cb=el('input');cb.type='checkbox';cb.checked=t[k];cb.onchange=()=>{t[k]=cb.checked};l.append(cb,label);r2.append(l)}
     const ex=el('button','primary','Export clip'),exNote=el('div','note bad');exNote.style.display='none';
-    ex.onclick=async()=>{exPending.add(c.id);paintEx(c.id);const ok=await post('/api/export/start',{id:c.id,start:t.start,end:t.end,vertical:t.vertical,captions:t.captions,hook:t.hookOff?'':(t.hook||'auto'),hook_style:t.hookStyle||'',voiceover:!!(t.vo&&c.voiceover)});
+    ex.onclick=async()=>{exPending.add(c.id);paintEx(c.id);const ok=await post('/api/export/start',{id:c.id,start:t.start,end:t.end,vertical:t.vertical,captions:t.captions,hook:t.hookOff?'':(t.hook||'auto'),hook_style:t.hookStyle||'',hook_src:t.hookSrc||'',voiceover:!!(t.vo&&c.voiceover)});
       exPending.delete(c.id);await load(false)};          // the server now owns the state: it flips back only when the file is really made
     r2.append(el('span','grow'),ex);b1.append(el('div','hint','Uses the clip range above. One encode: trim, 9:16 layout and captions together.'),r2,exNote,cpExportExtras(c,t),rfBox(c,t));
     if(nx){const e=el('div','row');e.append(el('span','mut','Files:'));for(const x of c.exports){const l=el('a','file',(x.vertical?'9:16 ':'')+(x.captions?'CC ':'')+fmt(x.start)+'-'+fmt(x.end));l.href=fileUrl(c,x.file);l.target='_blank';
@@ -845,6 +845,8 @@ class Store:
         return cp["layout"], cp
 
     def _reframe(self, src: Path, m: dict, start: float, end: float, layout: dict | None, cp: dict, offset: float = 0.0) -> dict | None:
+        if not m.get("res"):                                       # an older clip: measure it now
+            m = {**m, "res": list(probe_size(src) or []) or None}
         return reframe.make(src, start, end, layout or {"mode": self.cfg.vertical_mode}, m, (cp.get("record") or {}).get("must_show"),
                             m.get("reframe"), render_fps(self.cfg, src), ffmpeg_exe(), offset, getattr(self.cfg, "sharpen", 0.0))
 
@@ -869,7 +871,7 @@ class Store:
             raise ValueError("clip not found")
         self._check_trim(m, start, end)
         layout, _ = self.export_layout(m, vertical)
-        rep = quality.report(layout or {"mode": self.cfg.vertical_mode}, m.get("res"))
+        rep = quality.report(layout or {"mode": self.cfg.vertical_mode}, m.get("res") or list(probe_size(p.parent / m["file"]) or []))
         if not vertical:                                           # the full frame at its own size: nothing is enlarged
             rep.update(panels={}, zoom_room={})
         t = min(max(float(m.get("moment_s") or (start + end) / 2), start), max(start, end - 0.1))
@@ -914,7 +916,7 @@ class Store:
             return {"state": j["state"], "message": j["message"], "since": j["since"]} if j else None
 
     def start_export(self, cid: str, start: float, end: float, vertical: bool, captions: bool, hook: str | None = None,
-                     voiceover: bool = False, hook_style: str = "") -> dict:
+                     voiceover: bool = False, hook_style: str = "", hook_src: str = "") -> dict:
         """Queue an export and return at once. The clip stays 'queued' / 'encoding' on the SERVER until the file really exists and is
         recorded, so the page shows the right button state after any redraw, reload or second tab. Bad requests fail here, not later."""
         p, m = self.find(cid)
@@ -929,15 +931,15 @@ class Store:
             self.jobs[cid] = job
             if self._export_pool is None:
                 self._export_pool = PriorityPool(max(1, self.cfg.cut_workers), "export")
-            self._export_pool.submit(0, self._run_export, cid, job, start, end, vertical, captions, hook, voiceover, hook_style)
+            self._export_pool.submit(0, self._run_export, cid, job, start, end, vertical, captions, hook, voiceover, hook_style, hook_src)
         return {"state": "queued"}
 
     def _run_export(self, cid: str, job: dict, start: float, end: float, vertical: bool, captions: bool, hook: str | None = None,
-                    voiceover: bool = False, hook_style: str = "") -> None:
+                    voiceover: bool = False, hook_style: str = "", hook_src: str = "") -> None:
         with self.job_lock:
             job["state"] = "encoding"
         try:
-            extra = {k: v for k, v in (("hook", hook), ("voiceover", voiceover), ("hook_style", hook_style)) if v}
+            extra = {k: v for k, v in (("hook", hook), ("voiceover", voiceover), ("hook_style", hook_style), ("hook_src", hook_src)) if v}
             self.export(cid, start, end, vertical, captions, **extra)   # records the export in the clip's file before returning
         except Exception as e:
             msg = str(e) if isinstance(e, (ValueError, CaptionsUnavailable, RuntimeError)) else f"export failed: {e}"
@@ -1007,7 +1009,7 @@ class Store:
         return hooks.suggest(words, lang, avoid, seed=cid, extra=(rules.get("body") or {}).get("hooks") or [])
 
     def export(self, cid: str, start: float, end: float, vertical: bool, captions: bool, by: str = "you",
-               hook: str | None = None, voiceover: bool = False, hook_style: str = "") -> str:
+               hook: str | None = None, voiceover: bool = False, hook_style: str = "", hook_src: str = "") -> str:
         """Precise trim (+ optional 9:16, + optional burned captions) in ONE encode. Returns the new file name.
         `by` = "you" or "autopilot": only your own exports teach your style."""
         p, m = self.find(cid)
@@ -1021,11 +1023,13 @@ class Store:
             if not v or Path(v).name != v or not (p.parent / v).is_file():
                 raise ValueError("record or pick a voice-over first")
             vo = p.parent / v
-        hook_src = "you"
+        hook_src = hook_src if hook_src in ("groq", "template", "yours") else "you"   # a suggestion you kept on the card
         if hook == "auto":                                         # made for you: Groq or templates, in the clip's language
             got = self.suggest_hook(cid, start, end)
             hook, hook_src = (got["text"], got["source"]) if got else (None, "")
         hook = hooks.clean(hook) or None
+        if hook and hooks.problem(hook):                           # typed hooks obey the same rules (re-using one is fine)
+            raise ValueError(f"hook \"{hook}\": {hooks.problem(hook)}. Shorten or change it, or tick No hook.")
         hook_style = hook_style if hook_style in hooks.STYLE_NAMES else hooks.next_style()
         layout = LayoutStore(self.root).get(m["channel"]) if vertical else None
         cp = campaigns.plan(m, layout, vertical, self.cfg)          # a paid campaign: keep must_show in, burn the disclosure
@@ -1043,8 +1047,11 @@ class Store:
             ass = build_ass(words, start, end, vertical, self.cfg.caption_font, seam=(layout or {}).get("mode") == "split",
                             box=(layout or {}).get("captions"))
             ass = reframe.move_captions(ass, plan)                 # off the face while the webcam is big
+        burned: dict = {}
         ass = campaigns.burn(cp, ass, vertical, self.cfg, end - start, m, hook=hook, hook_style=hook_style,
-                             protected=reframe.hook_bands(plan))
+                             protected=reframe.hook_bands(plan), info=burned)
+        if hook and not burned.get("hook", True):
+            hook = None                                            # no room off the facecam / captions / disclosure: not burned
         name = (f"{src.stem}_{int(start * 10)}-{int(end * 10)}{'_v' if vertical else ''}{'_cc' if captions else ''}"
                 f"{'_ad' if cp['record'] else ''}{'_rf' if reframe.applied(plan) else ''}{'_hk' if hook else ''}{'_vo' if vo else ''}.mp4")
         errs: list[str] = []
@@ -1260,7 +1267,8 @@ def make_handler(store: Store):
                     return self._send(200, json.dumps(store.start_export(str(body.get("id")), float(body["start"]), float(body["end"]),
                                                                          bool(body.get("vertical")), bool(body.get("captions")),
                                                                          str(body.get("hook") or ""), bool(body.get("voiceover")),
-                                                                         str(body.get("hook_style") or ""))).encode())
+                                                                         str(body.get("hook_style") or ""),
+                                                                         str(body.get("hook_src") or ""))).encode())
                 except (ValueError, KeyError) as e:
                     return self._send(400, str(e).encode(), "text/plain")
             elif path == "/api/export/dismiss":

@@ -359,8 +359,11 @@ class ChannelWorker(threading.Thread):
             rf = reframe.make(out, sug[0], sug[1], layout or {"mode": c.vertical_mode}, meta, (cp["record"] or {}).get("must_show"),
                               meta.get("reframe"), render_fps(c, out), _ffmpeg(), sharpen=getattr(c, "sharpen", 0.0))
             plan = rf["plan"] if rf else None
+            burned: dict = {}
             ass = campaigns.burn(cp, None, True, c, sug[1] - sug[0], meta, hook=hook and hook["text"], hook_style=hook_style,
-                                 protected=reframe.hook_bands(plan))
+                                 protected=reframe.hook_bands(plan), info=burned)
+            if hook and not burned.get("hook", True):
+                hook = None                                                      # no room off the facecam / disclosure
             fin = out.with_name(f"{cid}_vertical.mp4")
             placed = export_clip(out, fin, sug[0], sug[1], c, vertical=True, ass_text=ass, layout=layout,
                                  motion=rf["graph"] if rf else None)
