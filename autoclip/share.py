@@ -129,7 +129,8 @@ def instagram_problem(ex: dict) -> str | None:
     if not o.get("hook"):
         return "needs a hook: leave the hook on (Make it original) and export again"
     if not ((ex.get("reframe") or {}).get("applied") or o.get("voiceover")):
-        return "needs a reframe (zooms / layout steps) or your voice-over as well as the hook: switch Reframe on or record a voice-over, then export again"
+        return ("needs a reframe (zooms / layout steps) or your voice-over as well as the hook: save a webcam layout (Set layout) "
+                "and keep Reframe on, or record a voice-over, then export again")
     return None
 
 
