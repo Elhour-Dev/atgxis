@@ -18,7 +18,7 @@ function rfBox(c,t){
     if(!r.ok){info.textContent=await r.text();return}
     const d=await r.json(),p=d.report.panels||{},z=d.report.zoom_room||{};
     const pl=d.report.plan;info.textContent=(d.report.res?'Source '+d.report.res[0]+'x'+d.report.res[1]+' · ':'')+Object.keys(p).map(k=>k+' enlarged '+p[k]+'x (zoom room '+z[k]+'x)').join(' · ')+' · frame at '+fmt(d.t-t.start)+' of the clip'
-      +(pl?' · plan: '+pl.zooms+' zoom'+(pl.zooms===1?'':'s')+(pl.layouts?', webcam-big steps':'')+(pl.track?', follows gameplay':'')+(pl.freeze?', freeze':''):'');
+      +(pl?' · plan: '+pl.zooms+' zoom'+(pl.zooms===1?'':'s')+(pl.layouts?', webcam-only steps':'')+(pl.track?', follows gameplay':'')+(pl.freeze?', freeze':''):'');
     warn.replaceChildren(...d.report.warnings.map(w=>el('div','note warn',w)));
     bef.src='/api/frame?'+new URLSearchParams({id:c.id,t:d.t});
     aft.src='/api/after?'+new URLSearchParams({id:c.id,t:d.t,start:t.start,end:t.end,vertical:t.vertical?1:0,n:Date.now()})};
@@ -30,7 +30,7 @@ function rfBox(c,t){
   function paintSw(){sw.replaceChildren();
     for(const [k,l,tip] of [['on','Reframe','Zooms, layout steps and a gameplay crop that follows the action, made from the stream sound and picture'],
       ['zoom','Zooms','Punch-in on loud / reaction peaks, slow push-in on build-ups. At most 2 per 30 s'],
-      ['layouts','Webcam big → split → webcam big','Split layouts: webcam big for the hook and the payoff, split for the action'],
+      ['layouts','Webcam only → split → webcam only','Split layouts: the webcam alone (over a blurred stream) for the hook and the reaction at the end, split for the action'],
       ['track','Follow gameplay','The gameplay crop moves to where the action is'],
       ['freeze','Freeze on peak','Holds the peak frame for half a second (sound keeps going)']]){
       const lb=el('label'),cb=el('input');cb.type='checkbox';cb.checked=!!o[k];cb.disabled=k!=='on'&&!o.on;lb.title=tip;

@@ -361,7 +361,7 @@ class ChannelWorker(threading.Thread):
             plan = rf["plan"] if rf else None
             burned: dict = {}
             ass = campaigns.burn(cp, None, True, c, sug[1] - sug[0], meta, hook=hook and hook["text"], hook_style=hook_style,
-                                 protected=reframe.hook_bands(plan), info=burned)
+                                 screen=reframe.hook_screen(plan, False), info=burned)
             if hook and not burned.get("hook", True):
                 hook = None                                                      # no room off the facecam / disclosure
             fin = out.with_name(f"{cid}_vertical.mp4")

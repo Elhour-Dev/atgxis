@@ -376,9 +376,11 @@ Without a saved box, captions sit on the line between webcam and gameplay.
 Every 9:16 export (yours, Autopilot's and the automatic one) moves like a hand-edited clip, made from the stream's own sound and
 picture (no extra program needed):
 - **Zooms:** an eased **punch-in** on the loudest moments and the moments the streamer moves most on webcam; a **slow push-in**
-  when the sound builds up before a peak. At most **2 zooms in any 30 seconds**.
-- **Layout steps** (split layouts): **webcam big** for the hook, **split** for the action, **webcam big** again for the reaction at
-  the end. While the webcam is big, captions move below it and the hook stays above it.
+  when the sound builds up before a peak. At most **2 zooms in any 30 seconds**. Zooms need a saved webcam layout (**Set layout**):
+  on the blurred full frame the app does not know where the webcam is, so it does not zoom there (a zoom could cut it off).
+- **Layout steps** (split layouts): **webcam only** (the webcam alone, centred over a blurred stream) for the whole hook, **split**
+  for the action, **webcam only** again for the reaction at the end. While the webcam is alone, captions move below it and the hook
+  stays above it. The webcam is not shown bigger than in the split layout: that would enlarge it past the 1.5x quality limit.
 - **Follow gameplay:** the gameplay crop slides (smoothly, never jumpy) toward where the action is on screen.
 - **Freeze on peak** (off by default): the peak frame holds for half a second; the clip keeps its length and the sound stays in sync.
 - **Safety:** a zoom never enlarges the stream more than 1.5x (see *Video quality*), never touches a panel a paid campaign needs
@@ -386,7 +388,7 @@ picture (no extra program needed):
   zoom can never crop them.
 - **Different every clip:** zoom sizes, timings and layout steps are random per clip, but the same clip always gets the same
   choices, so the before / after still matches the export. **🎲 Shuffle** picks new ones.
-- **On the card**, under **Reframe & quality**: switches for Reframe, Zooms, Webcam big → split → webcam big, Follow gameplay and
+- **On the card**, under **Reframe & quality**: switches for Reframe, Zooms, Webcam only → split → webcam only, Follow gameplay and
   Freeze on peak. Exports with a reframe get `_rf` in their file name. The analysis is cached next to the draft
   (`<clip>.signals.json`) and deleted with it.
 

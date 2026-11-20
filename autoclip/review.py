@@ -1024,10 +1024,8 @@ class Store:
                 raise ValueError("record or pick a voice-over first")
             vo = p.parent / v
         hook_src = hook_src if hook_src in ("groq", "template", "yours") else "you"   # a suggestion you kept on the card
-        if hook == "auto":                                         # made for you: Groq or templates, in the clip's language
-            got = self.suggest_hook(cid, start, end)
-            hook, hook_src = (got["text"], got["source"]) if got else (None, "")
-        hook = hooks.clean(hook) or None
+        auto = hook == "auto"
+        hook = None if auto else (hooks.clean(hook) or None)
         if hook and hooks.problem(hook):                           # typed hooks obey the same rules (re-using one is fine)
             raise ValueError(f"hook \"{hook}\": {hooks.problem(hook)}. Shorten or change it, or tick No hook.")
         hook_style = hook_style if hook_style in hooks.STYLE_NAMES else hooks.next_style()
@@ -1047,9 +1045,12 @@ class Store:
             ass = build_ass(words, start, end, vertical, self.cfg.caption_font, seam=(layout or {}).get("mode") == "split",
                             box=(layout or {}).get("captions"))
             ass = reframe.move_captions(ass, plan)                 # off the face while the webcam is big
+        if auto:                                                   # made for you after the captions, so it can use their words
+            got = self.suggest_hook(cid, start, end)
+            hook, hook_src = (got["text"], got["source"]) if got else (None, "")
         burned: dict = {}
         ass = campaigns.burn(cp, ass, vertical, self.cfg, end - start, m, hook=hook, hook_style=hook_style,
-                             protected=reframe.hook_bands(plan), info=burned)
+                             screen=reframe.hook_screen(plan, captions) if vertical else None, info=burned)
         if hook and not burned.get("hook", True):
             hook = None                                            # no room off the facecam / captions / disclosure: not burned
         name = (f"{src.stem}_{int(start * 10)}-{int(end * 10)}{'_v' if vertical else ''}{'_cc' if captions else ''}"

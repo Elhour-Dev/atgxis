@@ -646,14 +646,15 @@ def protected_bands(layout: dict | None, vertical: bool, captions: bool) -> list
 
 
 def burn(p: dict, base_ass: str | None, vertical: bool, cfg, dur: float, meta: dict, hook: str | None = None,
-         hook_style: str = "pop", protected: list | None = None, info: dict | None = None) -> str | None:
+         hook_style: str = "pop", protected: list | None = None, info: dict | None = None,
+         screen: list | None = None) -> str | None:
     """The ASS text for an export: captions + campaign disclosure / handle + your hook text (never over the facecam / captions)."""
     c = p.get("campaign")
     handle = None
     if c and c["rules"]["must_show"] == "handle":
         from .describe import mention
         handle = mention(meta, cfg) or ("@" + str(meta.get("channel", "")))
-    bands = protected_bands(p.get("layout"), vertical, bool(base_ass)) + list(protected or [])
+    bands = (list(screen) if screen is not None else protected_bands(p.get("layout"), vertical, bool(base_ass))) + list(protected or [])
     return overlay_ass(base_ass, vertical, getattr(cfg, "caption_font", "Arial"), dur,
                        c["rules"]["disclosure"] if c else None, hook, handle, hook_style, bands, info)
 

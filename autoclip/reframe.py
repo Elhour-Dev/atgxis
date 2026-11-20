@@ -4,7 +4,7 @@
              Standard library only (no OpenCV needed). Cached per draft in <draft>.signals.json.
   plan()     pure logic, like detector.py: turns those signals into
                * punch-in zooms (eased) on loud + webcam-reaction peaks, slow push-ins on build-ups,
-               * layout steps for a split layout: webcam big (hook) -> split (action) -> webcam big (payoff),
+               * layout steps for a split layout: webcam only (hook) -> split (action) -> webcam only (payoff),
                * a gameplay crop that follows where the action is,
                * an optional freeze-frame on the peak (off by default; it keeps the clip's length and sound in sync).
              Rules: at most 2 zooms in any 30 s; a zoom never enlarges the stream more than 1.5x (quality.py), never touches
@@ -36,8 +36,8 @@ MAX_ZOOMS = 2                # ... in any 30 s
 WINDOW_S = 30.0
 MIN_ZOOM = 1.06              # less than this is not worth a zoom
 DEFAULTS = {"on": True, "zoom": True, "layouts": True, "track": True, "freeze": False}
-FACE_BOX = (0.23, 0.66)      # webcam-big phases: the webcam sits between these heights of the frame (hook above, captions below)
-CAPTION_Y = 0.72             # where captions move to during webcam-big phases
+FACE_BOX = (0.23, 0.66)      # webcam-only phases: the webcam sits between these heights of the frame (hook above, captions below)
+CAPTION_Y = 0.72             # where captions move to during webcam-only phases
 
 
 def options(saved: dict | None) -> dict:
@@ -79,6 +79,8 @@ def cached_signals(src: Path, ffmpeg: str = "ffmpeg") -> dict:
         pass
     d = analyze(src, ffmpeg)
     d["size"] = src.stat().st_size
+    if not (d["loud"] or any(d["motion"])):
+        return d                                                  # ffmpeg could not read it: do not remember "nothing happens"
     try:
         cache.write_text(json.dumps(d), encoding="utf-8")
     except OSError:
@@ -180,15 +182,18 @@ def plan(w: dict, dur: float, layout: dict | None, res, opts: dict, seed: str, m
         room["face"] = 1.0                                        # the webcam must stay whole
     if mode == "split" and layout.get("game_fit") == "blur":
         room["game"] = 1.0                                        # the whole stream frame is shown there: nothing to zoom
+    if mode == "blur" and room.get("main", 1.0) > 1.0:
+        room["main"] = 1.0                                        # where the webcam is is unknown: a zoom could cut it off
+        out["notes"].append("no zoom on the full frame: save a webcam layout (Set layout) so zooms know where the face is")
     if whole:
         room = {k: 1.0 for k in room}
     pk = peaks(w, dur)
     main = pk[0][0] if pk else None
 
-    # layout steps (split layouts with a webcam only): webcam big for the hook, split, webcam big for the payoff (after the zooms)
+    # layout steps (split layouts with a webcam only): webcam only for the hook, split, webcam only for the payoff (after the zooms)
     steps = bool(opts.get("layouts") and mode == "split" and not whole and dur >= 8)
     if steps and rng.random() < 0.85:
-        out["phases"].append([0.0, round(min(hook_s, dur / 4), 2)])
+        out["phases"].append([0.0, hook_s])                       # the whole hook: the screen under it never changes
 
     def in_phase(a: float, b: float) -> bool:
         return any(a < q1 and b > q0 for q0, q1 in out["phases"])
@@ -210,7 +215,8 @@ def plan(w: dict, dur: float, layout: dict | None, res, opts: dict, seed: str, m
                 t2 = t + rng.uniform(0.6, 1.2)
                 t3 = t2 + 0.5
                 amp = min(top, rng.uniform(1.06, 1.11))
-            else:
+                push = not in_phase(t0, t3)                       # the build-up starts under the webcam-only intro: punch instead
+            if not push:
                 t0 = max(0.0, t - 0.15)
                 t1 = t0 + 0.18
                 t2 = t1 + rng.uniform(0.8, 1.6)
@@ -229,7 +235,7 @@ def plan(w: dict, dur: float, layout: dict | None, res, opts: dict, seed: str, m
         if not out["zooms"] and pk and max(room.values() or [1.0]) < MIN_ZOOM:
             out["notes"].append("no zoom: the layout already enlarges every panel 1.5x or more (or the campaign needs it whole)")
 
-    if steps and main is not None:                                # the payoff: webcam big once the moment (and its zoom) is over
+    if steps and main is not None:                                # the payoff: webcam only once the moment (and its zoom) is over
         a = main + rng.uniform(0.6, 1.4)
         a = max([a, dur - rng.uniform(3.0, 4.5)] + [z["t3"] + 0.2 for z in out["zooms"] if z["t0"] <= main + 1.4])
         if dur - a >= 1.5 and a > (out["phases"][0][1] + 2.0 if out["phases"] else 2.0) and not any(z["t3"] > a for z in out["zooms"]):
@@ -392,6 +398,16 @@ def graph(layout: dict | None, p: dict, res, fps: float, offset: float = 0.0, sh
 
 
 # ---------------------------------------------------------------------------------------------------- around the graph
+def hook_screen(p: dict | None, captions: bool) -> list[tuple[float, float]] | None:
+    """What is on screen under the hook when the clip opens on the webcam alone: the webcam box and the captions (moved below
+    it). None when the clip opens on the normal layout (then the layout's own bands apply)."""
+    if not (p and p.get("phases") and p["phases"][0][0] == 0.0):
+        return None
+    size = int(lay.OUT_H * 0.046)
+    cap = [(lay.OUT_H * CAPTION_Y - size * 2.6, lay.OUT_H * CAPTION_Y + size * 1.4)] if captions else []
+    return [(lay.OUT_H * FACE_BOX[0], lay.OUT_H * FACE_BOX[1])] + cap
+
+
 def hook_bands(p: dict | None) -> list[tuple[float, float]]:
     """Rows the hook must avoid because of the plan: the big webcam during the intro phase."""
     if p and p.get("phases") and p["phases"][0][0] == 0.0:

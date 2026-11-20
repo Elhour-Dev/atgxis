@@ -43,13 +43,16 @@ def test_max_two_zooms_in_any_30_seconds_whatever_the_order():
 
 def test_plan_zooms_on_peaks_obeys_the_rules_and_is_repeatable():
     w = sig(60, peaks_at=(5, 12, 19, 26, 40, 50))
-    p = reframe.plan(w, 60, {"mode": "blur"}, (1920, 1080), ALL, "clip-a")
+    opts = {**ALL, "layouts": False}
+    p = reframe.plan(w, 60, SPLIT, (1920, 1080), opts, "clip-a")
     starts = [z["t0"] for z in p["zooms"]]
     assert 2 <= len(starts) <= 4 and all(sum(1 for x in starts if a <= x < a + 30) <= 2 for a in starts)
-    room = quality.max_zoom(quality.panels({"mode": "blur"}, (1920, 1080))["main"])
-    assert all(1.0 < z["amp"] <= room for z in p["zooms"])
-    assert reframe.plan(w, 60, {"mode": "blur"}, (1920, 1080), ALL, "clip-a") == p           # same clip, same choices
-    assert any(reframe.plan(w, 60, {"mode": "blur"}, (1920, 1080), ALL, f"s{i}")["zooms"] != p["zooms"] for i in range(5))
+    room = quality.max_zoom(quality.panels(SPLIT, (1920, 1080))["game"])
+    assert all(z["panel"] == "game" and 1.0 < z["amp"] <= room for z in p["zooms"])
+    assert reframe.plan(w, 60, SPLIT, (1920, 1080), opts, "clip-a") == p                     # same clip, same choices
+    assert any(reframe.plan(w, 60, SPLIT, (1920, 1080), opts, f"s{i}")["zooms"] != p["zooms"] for i in range(5))
+    blur = reframe.plan(w, 60, {"mode": "blur"}, (1920, 1080), ALL, "clip-a")
+    assert blur["zooms"] == [] and "Set layout" in blur["notes"][0]                           # webcam position unknown: no zoom
 
 
 def test_no_zoom_when_the_layout_already_enlarges_too_much_or_on_a_low_res_crop():
@@ -84,8 +87,8 @@ def test_layout_steps_webcam_big_split_webcam_big_and_zooms_stay_out_of_them():
 
 
 def test_push_in_on_a_buildup():
-    kinds = {z["kind"] for i in range(12) for z in reframe.plan(sig(30, peaks_at=(15.0,), build=(10.0, 14.5)), 30, {"mode": "blur"},
-                                                                     (1920, 1080), ALL, f"b{i}")["zooms"]}
+    kinds = {z["kind"] for i in range(12) for z in reframe.plan(sig(30, peaks_at=(15.0,), build=(10.0, 14.5)), 30, SPLIT,
+                                                                     (1920, 1080), {**ALL, "layouts": False}, f"b{i}")["zooms"]}
     assert kinds == {"push", "punch"}
 
 
@@ -167,6 +170,8 @@ def test_store_export_records_the_reframe_and_preview_matches(loud_clip, tmp_pat
     shutil.copy(loud_clip, d / "c.mp4")
     (d / "c.clip.json").write_text(json.dumps({"id": "ch/s/c", "file": "c.mp4", "channel": "ch", "duration_s": 12, "status": "new",
                                                "res": [1920, 1080], "moment_s": 6.0}))
+    from autoclip.layout import LayoutStore
+    LayoutStore(tmp_path).save("ch", SPLIT)
     store = review.Store(tmp_path, Config())
     v = store.quality_view("ch/s/c", 0.0, 12.0, True)
     assert v["report"]["plan"]["zooms"] >= 1 and 5.0 < v["t"] < 8.0
@@ -185,3 +190,33 @@ def test_facecam_must_show_on_a_full_frame_layout_means_no_zoom_at_all():
     for mode in ("blur", "crop"):
         p = reframe.plan(sig(30, peaks_at=(8.0, 20.0)), 30, {"mode": mode}, (1920, 1080), ALL, "x", must_show="facecam")
         assert p["zooms"] == [] and p["track"] is None
+
+
+def test_hook_over_a_webcam_only_intro_sits_above_the_webcam_and_off_the_moved_captions():
+    from autoclip import campaigns, hooks
+    p = {"phases": [[0.0, 2.5]]}
+    screen = reframe.hook_screen(p, True)
+    info = {}
+    ass = campaigns.overlay_ass(None, True, "Arial", 30, hook="Wait for it", protected=screen, info=info)
+    line = next(x for x in ass.splitlines() if ",Hook," in x)
+    y = int(line.split("\pos(")[1].split(",")[1].split(")")[0])
+    size = round(1920 * 0.05)
+    assert info["hook"] and y + size * 2.5 <= 1920 * reframe.FACE_BOX[0]                    # above the webcam, so above captions
+    assert reframe.hook_screen({"phases": [[20.0, 30.0]]}, True) is None
+    assert reframe.plan(sig(30, peaks_at=(22.0,)), 30, SPLIT, (1920, 1080), ALL, "s1")["phases"][0] == [0.0, hooks.HOOK_S]
+
+
+@pytest.mark.skipif(not ffmpeg_ok, reason="no ffmpeg")
+def test_a_zoom_is_really_visible_in_the_export(loud_clip, tmp_path):
+    p = {"seed": "z", "mode": "split", "phases": [], "track": None, "freeze": None, "notes": [],
+         "zooms": [{"panel": "game", "kind": "punch", "t0": 5.0, "t1": 5.2, "t2": 7.0, "t3": 7.3, "amp": 1.4, "fx": 0.5, "fy": 0.5}]}
+    g = reframe.graph(SPLIT, p, (1920, 1080), 30.0)
+    out = tmp_path / "z.mp4"
+    assert export_clip(loud_clip, out, 0.0, 9.0, Config(), True, None, SPLIT, [], motion=g)
+
+    def box_width(at):                                                                      # the white box, bottom (gameplay) panel
+        r = subprocess.run(["ffmpeg", "-v", "error", "-ss", str(at), "-i", str(out), "-frames:v", "1", "-vf", "crop=1080:960:0:960,format=gray",
+                            "-f", "rawvideo", "-"], capture_output=True).stdout
+        rows = [r[y * 1080:(y + 1) * 1080] for y in range(960)]
+        return max(sum(1 for v in row if v > 200) for row in rows)
+    assert box_width(6.2) > box_width(3.0) * 1.25                                           # 1.4x zoom: the box looks bigger

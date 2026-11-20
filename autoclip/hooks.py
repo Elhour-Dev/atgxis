@@ -216,7 +216,7 @@ def suggest(words: list | None, lang: str, avoid: list[str] | None = None, seed:
     `extra` = your own hook lines (from your style), used before the built-in templates."""
     recent = recent_texts() + list(avoid or [])
     key = groq_key() if key is None else key
-    if key:
+    if key and words:                                            # Groq only writes from what was said, never from nothing
         try:
             transcript = " ".join(clean(w[0]) for w in words or [])
             for h in _groq(transcript, lang, recent, key, http):

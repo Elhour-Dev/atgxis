@@ -161,7 +161,8 @@ def test_groq_preamble_lines_are_never_taken_as_a_hook():
     def fake_http(*a, **k):
         content = "Here are 6 hooks for this clip:\n1. Watch what chat does next\n2. Wait for it"
         return 200, {}, json.dumps({"choices": [{"message": {"content": content}}]}).encode()
-    assert hooks.suggest(None, "en", key="gsk_t", http=fake_http)["text"] == "Watch what chat does next"
+    assert hooks.suggest([("hey", 0, 1)], "en", key="gsk_t", http=fake_http)["text"] == "Watch what chat does next"
+    assert hooks.suggest(None, "en", key="gsk_t", http=fake_http)["source"] == "template"          # no words: no Groq
 
 
 def test_more_than_50_built_in_hooks_per_language_so_they_never_run_out():
