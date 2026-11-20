@@ -364,6 +364,24 @@ Other options: whole screen on a blurred background, plain center crop, adjustab
 (its height sets the text size; the sample text inside shows how it will look and wrap). Saved per streamer along with the layout.
 Without a saved box, captions sit on the line between webcam and gameplay.
 
+### Reframe: zooms, layout steps and a crop that follows the action
+Every 9:16 export (yours, Autopilot's and the automatic one) moves like a hand-edited clip, made from the stream's own sound and
+picture (no extra program needed):
+- **Zooms:** an eased **punch-in** on the loudest moments and the moments the streamer moves most on webcam; a **slow push-in**
+  when the sound builds up before a peak. At most **2 zooms in any 30 seconds**.
+- **Layout steps** (split layouts): **webcam big** for the hook, **split** for the action, **webcam big** again for the reaction at
+  the end. While the webcam is big, captions move below it and the hook stays above it.
+- **Follow gameplay:** the gameplay crop slides (smoothly, never jumpy) toward where the action is on screen.
+- **Freeze on peak** (off by default): the peak frame holds for half a second; the clip keeps its length and the sound stays in sync.
+- **Safety:** a zoom never enlarges the stream more than 1.5x (see *Video quality*), never touches a panel a paid campaign needs
+  whole (`must_show`), and nothing is ever mirrored. Captions, hook and the ad disclosure are drawn on the finished frame, so a
+  zoom can never crop them.
+- **Different every clip:** zoom sizes, timings and layout steps are random per clip, but the same clip always gets the same
+  choices, so the before / after still matches the export. **🎲 Shuffle** picks new ones.
+- **On the card**, under **Reframe & quality**: switches for Reframe, Zooms, Webcam big → split → webcam big, Follow gameplay and
+  Freeze on peak. Exports with a reframe get `_rf` in their file name. The analysis is cached next to the draft
+  (`<clip>.signals.json`) and deleted with it.
+
 ## Post text (title + description) for every clip
 Open **② Post text** on any clip. Titles are built from what is specific to that clip: the phrase chat was spamming ("NO WAY", "KEKW"),
 how big the spike was, whether the streamer got loud, and which reaction it was (funny / shock / hype). Buttons:

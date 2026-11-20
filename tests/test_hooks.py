@@ -119,7 +119,7 @@ def test_auto_hook_is_burned_recorded_and_remembered(tmp_path, monkeypatch):
     (d / "c.clip.json").write_text(json.dumps({"id": "ch/s/c", "file": "c.mp4", "channel": "ch", "duration_s": 30, "status": "new"}))
     got = {}
 
-    def fake_export(src, out, start, end, cfg, vertical, ass, layout, errs, voiceover=None):
+    def fake_export(src, out, start, end, cfg, vertical, ass, layout, errs, voiceover=None, **kw):
         got["ass"] = ass
         out.write_bytes(b"v")
         return out

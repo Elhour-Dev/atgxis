@@ -130,7 +130,8 @@ def has_audio(path: Path) -> bool:
     return bool(r.stdout.strip())
 
 
-def _filters(cfg: Config, vertical: bool, ass: str | None, layout: dict | None = None, audio: str | None = None) -> list[str]:
+def _filters(cfg: Config, vertical: bool, ass: str | None, layout: dict | None = None, audio: str | None = None,
+             motion: str | None = None) -> list[str]:
     """ffmpeg filter arguments: optional 9:16 layout (split / blur / crop), fps cap, optional burned-in captions, optional audio
     graph ending in [a] (the voice-over mix). `ass` is a bare file name (ffmpeg runs in that folder) so Windows drive letters
     never break the filter."""
@@ -140,7 +141,7 @@ def _filters(cfg: Config, vertical: bool, ass: str | None, layout: dict | None =
             return ["-filter_complex", "[0:v]" + (",".join(post) or "null") + "[v];" + audio, "-map", "[v]", "-map", "[a]"]
         return ["-vf", ",".join(post)] if post else []
     base = layout if layout else {"mode": cfg.vertical_mode}
-    graph = lay.chain(base, getattr(cfg, "sharpen", 0.0))
+    graph = motion or lay.chain(base, getattr(cfg, "sharpen", 0.0))       # motion = the reframe graph (zooms, layout steps)
     if cfg.out_fps:
         # fps FIRST: the scaling/blur/overlay below then runs on 30 frames a second instead of 60 (same picture, ~1.7x faster)
         graph = f"[0:v]fps={cfg.out_fps}[f];" + graph.replace("[0:v]", "[f]", 1)
@@ -202,6 +203,20 @@ def probe_size(path: Path) -> tuple[int, int] | None:
         return None
 
 
+def probe_fps(path: Path) -> float | None:
+    r = _run([ffprobe_exe(), "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=avg_frame_rate", "-of", "csv=p=0", str(path)], 30)
+    try:
+        a, b = r.stdout.strip().split("/")
+        return float(a) / float(b) if float(b) else None
+    except ValueError:
+        return None
+
+
+def render_fps(cfg: Config, src: Path) -> float:
+    """Frames per second of an export of `src`: the out_fps setting, else the source's own rate."""
+    return float(cfg.out_fps) if cfg.out_fps else (probe_fps(src) or 30.0)
+
+
 def probe_duration(path: Path) -> float | None:
     r = _run([ffprobe_exe(), "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(path)], 30)
     try:
@@ -241,7 +256,7 @@ def _place(tmp: Path, final: Path) -> Path:
 
 def export_clip(src: Path, out: Path, start: float, end: float, cfg: Config, vertical: bool = False,
                 ass_text: str | None = None, layout: dict | None = None, errors: list | None = None,
-                voiceover: Path | None = None) -> bool:
+                voiceover: Path | None = None, motion: str | None = None) -> bool:
     """FINAL clip: ONE precise encode that does trim + optional 9:16 layout + optional burned captions together.
     ffmpeg runs inside the output folder with bare file names so Windows drive letters ('C:') never break the ass filter."""
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -257,7 +272,7 @@ def export_clip(src: Path, out: Path, start: float, end: float, cfg: Config, ver
         if cfg.normalize_audio:                          # -af cannot touch a stream made by -filter_complex: normalise inside it
             audio = audio.replace("[a]", "[am]") + f";[am]{LOUDNORM}[a]"
     cmd = [ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error", "-ss", f"{max(start, 0):.3f}", "-i", str(src.resolve()), *vo_in,
-           "-t", f"{max(end - start, 0.5):.3f}", *_filters(cfg, vertical, ass_name, layout, audio), *_vcodec(cfg),
+           "-t", f"{max(end - start, 0.5):.3f}", *_filters(cfg, vertical, ass_name, layout, audio, motion), *_vcodec(cfg),
            *_acodec(cfg, bool(audio)), "-movflags", "+faststart", tmp.name]
     cmd, kw = _low_priority(cmd, cfg)
     try:

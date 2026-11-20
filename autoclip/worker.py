@@ -16,12 +16,13 @@ from typing import Callable
 from .audio import AudioMeter
 from .chat import TwitchChat, YouTubeChat
 from .config import Config
-from .cutter import cut_clip, cut_draft, draft_offset, export_clip, loudness_jump, probe_duration, probe_size
+from .cutter import cut_clip, cut_draft, draft_offset, export_clip, loudness_jump, probe_duration, probe_size, render_fps
+from .recorder import ffmpeg_exe as _ffmpeg
 from .describe import suggest as suggest_description
 from .disk import clips_gb, free_gb
 from .detector import ChatEvent, Spike, SpikeDetector
 from .lanes import Lanes
-from . import campaigns, hooks
+from . import campaigns, hooks, reframe
 from .layout import LayoutStore
 from .recorder import Recorder
 
@@ -355,16 +356,21 @@ class ChannelWorker(threading.Thread):
             layout = cp["layout"]
             hook = hooks.suggest(None, hooks.language(None, c.whisper_language or None), seed=cid, key="")   # no transcript yet: templates
             hook_style = hooks.next_style()
-            ass = campaigns.burn(cp, None, True, c, sug[1] - sug[0], meta, hook=hook and hook["text"], hook_style=hook_style)
+            rf = reframe.make(out, sug[0], sug[1], layout or {"mode": c.vertical_mode}, meta, (cp["record"] or {}).get("must_show"),
+                              meta.get("reframe"), render_fps(c, out), _ffmpeg(), sharpen=getattr(c, "sharpen", 0.0))
+            plan = rf["plan"] if rf else None
+            ass = campaigns.burn(cp, None, True, c, sug[1] - sug[0], meta, hook=hook and hook["text"], hook_style=hook_style,
+                                 protected=reframe.hook_bands(plan))
             fin = out.with_name(f"{cid}_vertical.mp4")
-            placed = export_clip(out, fin, sug[0], sug[1], c, vertical=True, ass_text=ass, layout=layout)
+            placed = export_clip(out, fin, sug[0], sug[1], c, vertical=True, ass_text=ass, layout=layout,
+                                 motion=rf["graph"] if rf else None)
             if not placed:
                 self._count("failed_cuts")
                 return
             fin = placed if isinstance(placed, Path) else fin                    # may carry a _2 suffix if the name was locked
             rec = {"file": fin.name, "start": sug[0], "end": sug[1], "vertical": True, "captions": False,
                    "layout": (layout or {}).get("mode", c.vertical_mode), "copy": self._copy_final(fin), "by": "recorder",
-                   **({"campaign": cp["record"]} if cp["record"] else {}),
+                   **({"campaign": cp["record"]} if cp["record"] else {}), "reframe": reframe.summary(plan),
                    **({"originality": {"voiceover": False, "hook": True},
                        "hook": {"text": hook["text"], "style": hook_style, "source": hook["source"]}} if hook else {})}
             meta = _read_meta(meta_path) or meta                                 # re-read: you may have pressed Keep/Trash meanwhile

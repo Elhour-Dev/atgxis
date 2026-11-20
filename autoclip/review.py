@@ -5,6 +5,7 @@ import base64
 import binascii
 import json
 import mimetypes
+import os
 import re
 import sys
 import threading
@@ -17,8 +18,9 @@ from .config import Config
 from .captions import CaptionsUnavailable, build_ass, cached_words, transcribe, words_in_window
 from . import layout as lay
 import html
-from . import accounts, autopilot, autopilot_page, campaigns, campaigns_page, hooks, publish, quality, reframe_page, settings, share, style, taste, zernio      # noqa: F401  (publish / zernio register the 'direct' / 'auto' sharing methods)
-from .cutter import export_clip, grab_frame, probe_size
+from . import accounts, autopilot, autopilot_page, campaigns, campaigns_page, hooks, publish, quality, reframe, reframe_page, settings, share, style, taste, zernio      # noqa: F401  (publish / zernio register the 'direct' / 'auto' sharing methods)
+from .cutter import export_clip, grab_frame, probe_size, render_fps
+from .recorder import ffmpeg_exe
 from .describe import suggest as suggest_description
 from .facecam import FacecamUnavailable, detect_facecam
 from .lanes import PriorityPool
@@ -753,7 +755,7 @@ class Store:
                     return False                                  # an export is still writing this clip's files
                 names = [m.get("file")] + [e.get("file") for e in m.get("exports") or []] + [(m.get("voiceover") or {}).get("file")]
                 failed = False
-                for name in names + [(m.get("file") or "").replace(".mp4", ".words.json")]:
+                for name in names + [(m.get("file") or "").replace(".mp4", x) for x in (".words.json", ".signals.json")]:
                     if name and Path(name).name == name:          # only plain file names next to the .clip.json
                         try:
                             (p.parent / name).unlink(missing_ok=True)
@@ -839,6 +841,24 @@ class Store:
         cp = campaigns.plan(m, layout, vertical, self.cfg)
         return cp["layout"], cp
 
+    def _reframe(self, src: Path, m: dict, start: float, end: float, layout: dict | None, cp: dict, offset: float = 0.0) -> dict | None:
+        return reframe.make(src, start, end, layout or {"mode": self.cfg.vertical_mode}, m, (cp.get("record") or {}).get("must_show"),
+                            m.get("reframe"), render_fps(self.cfg, src), ffmpeg_exe(), offset, getattr(self.cfg, "sharpen", 0.0))
+
+    def set_reframe(self, cid: str, body: dict) -> dict:
+        """The card's reframe switches (and Shuffle: new random choices for this clip)."""
+        with self.lock:
+            p, m = self.find(cid)
+            if not p:
+                raise ValueError("clip not found")
+            cur = reframe.options(m.get("reframe"))
+            cur.update({k: bool(body[k]) for k in reframe.DEFAULTS if k in body})
+            if body.get("shuffle"):
+                cur["seed"] = os.urandom(4).hex()
+            m["reframe"] = cur
+            _write_json(p, m)
+            return cur
+
     def quality_view(self, cid: str, start: float, end: float, vertical: bool) -> dict:
         """The card's quality report and the moment shown in the before / after stills (the chat moment, inside the trim)."""
         p, m = self.find(cid)
@@ -850,14 +870,24 @@ class Store:
         if not vertical:                                           # the full frame at its own size: nothing is enlarged
             rep.update(panels={}, zoom_room={})
         t = min(max(float(m.get("moment_s") or (start + end) / 2), start), max(start, end - 0.1))
-        return {"t": round(t, 2), "report": rep}
+        rf = self._reframe(p.parent / m["file"], m, start, end, layout, self.export_layout(m, vertical)[1]) if vertical else None
+        if rf:
+            zs = rf["plan"]["zooms"]
+            if zs:                                                 # show the strongest zoom at its fullest
+                z = max(zs, key=lambda z: z["amp"])
+                t = start + (z["t1"] + z["t2"]) / 2
+            rep["plan"] = reframe.summary(rf["plan"])
+            rep["warnings"] += rf["plan"]["notes"]
+        return {"t": round(t, 2), "report": rep, "options": reframe.options(m.get("reframe"))}
 
     def after_frame(self, cid: str, t: float, start: float, end: float, vertical: bool) -> bytes:
         """One frame of the export at time t, rendered through the same filter graph as the export itself."""
         src, m = self.draft_path(cid)
         self._check_trim(m, start, end)
-        layout, _ = self.export_layout(m, vertical)
-        graph = lay.chain(layout or {"mode": self.cfg.vertical_mode}, getattr(self.cfg, "sharpen", 0.0)) if vertical else None
+        layout, cp = self.export_layout(m, vertical)
+        rf = self._reframe(src, m, start, end, layout, cp, offset=t - start) if vertical else None
+        graph = ((rf or {}).get("graph") or lay.chain(layout or {"mode": self.cfg.vertical_mode}, getattr(self.cfg, "sharpen", 0.0))
+                 if vertical else None)
         img = grab_frame(src, t, graph)
         if not img:
             raise RuntimeError("could not render the after frame")
@@ -997,6 +1027,8 @@ class Store:
         layout = LayoutStore(self.root).get(m["channel"]) if vertical else None
         cp = campaigns.plan(m, layout, vertical, self.cfg)          # a paid campaign: keep must_show in, burn the disclosure
         layout = cp["layout"]
+        rf = self._reframe(src, m, start, end, layout, cp) if vertical else None
+        plan = rf["plan"] if rf else None
         ass = None
         if captions:
             words = transcribe(src, self.cfg, start, end)          # only the part being exported; may raise CaptionsUnavailable
@@ -1007,11 +1039,14 @@ class Store:
                                  "Move the trim, or export without captions.")
             ass = build_ass(words, start, end, vertical, self.cfg.caption_font, seam=(layout or {}).get("mode") == "split",
                             box=(layout or {}).get("captions"))
-        ass = campaigns.burn(cp, ass, vertical, self.cfg, end - start, m, hook=hook, hook_style=hook_style)
+            ass = reframe.move_captions(ass, plan)                 # off the face while the webcam is big
+        ass = campaigns.burn(cp, ass, vertical, self.cfg, end - start, m, hook=hook, hook_style=hook_style,
+                             protected=reframe.hook_bands(plan))
         name = (f"{src.stem}_{int(start * 10)}-{int(end * 10)}{'_v' if vertical else ''}{'_cc' if captions else ''}"
-                f"{'_ad' if cp['record'] else ''}{'_hk' if hook else ''}{'_vo' if vo else ''}.mp4")
+                f"{'_ad' if cp['record'] else ''}{'_rf' if reframe.applied(plan) else ''}{'_hk' if hook else ''}{'_vo' if vo else ''}.mp4")
         errs: list[str] = []
-        placed = export_clip(src, p.parent / name, start, end, self.cfg, vertical, ass, layout, errs, voiceover=vo)
+        placed = export_clip(src, p.parent / name, start, end, self.cfg, vertical, ass, layout, errs, voiceover=vo,
+                             motion=rf["graph"] if rf else None)
         if not placed:
             why = errs[0] if errs else "see the console running `review`"
             raise RuntimeError(("" if why.startswith("could not save") else "ffmpeg failed: ") + why)
@@ -1025,7 +1060,8 @@ class Store:
                  "layout": (layout or {}).get("mode", self.cfg.vertical_mode) if vertical else None, "by": by,
                  **({"campaign": cp["record"]} if cp["record"] else {}),
                  **({"originality": {"voiceover": bool(vo), "hook": bool(hook)}} if vo or hook else {}),
-                 **({"hook": {"text": hook, "style": hook_style, "source": hook_src}} if hook else {})}]
+                 **({"hook": {"text": hook, "style": hook_style, "source": hook_src}} if hook else {}),
+                 **({"reframe": reframe.summary(plan)} if vertical else {})}]
             _write_json(p, m)
         if hook:
             hooks.remember(hook, hook_style, hook_src)
@@ -1061,7 +1097,7 @@ class Store:
             for p, m in list(self._metas()):
                 if m.get("status") == "trash":
                     names = [m.get("file")] + [e["file"] for e in m.get("exports", [])] + [(m.get("voiceover") or {}).get("file")]
-                    for name in names + [m.get("file", "").replace(".mp4", ".words.json")]:
+                    for name in names + [m.get("file", "").replace(".mp4", x) for x in (".words.json", ".signals.json")]:
                         if name:
                             (p.parent / name).unlink(missing_ok=True)
                     p.unlink(missing_ok=True)
@@ -1348,6 +1384,11 @@ def make_handler(store: Store):
                                              [str(x) for x in body.get("avoid") or []][:50])
                     return self._send(200, json.dumps(got or {"text": "", "source": "none"}, ensure_ascii=False).encode())
                 except (ValueError, KeyError, TypeError) as e:
+                    return self._send(400, str(e).encode(), "text/plain")
+            elif path == "/api/reframe":
+                try:
+                    return self._send(200, json.dumps(store.set_reframe(str(body.get("id")), body)).encode())
+                except ValueError as e:
                     return self._send(400, str(e).encode(), "text/plain")
             elif path == "/api/hook/key":
                 k = "".join(str(body.get("key") or "").split())
