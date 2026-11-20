@@ -113,6 +113,72 @@ def providers_info() -> list[dict]:
     return [{"name": p.name, "label": p.label, "automatic": p.automatic, "configured": p.configured()} for p in PROVIDERS.values()]
 
 
+# ---------------------------------------------------------------------------------------------------- Instagram originality check
+POSTED = ("done", "draft")
+
+
+def original(ex: dict) -> bool:
+    """A clip with your own touch: a hook AND (a reframe OR your voice-over). Tagged "Original" on the card."""
+    o = ex.get("originality") or {}
+    return bool(o.get("hook") and ((ex.get("reframe") or {}).get("applied") or o.get("voiceover")))
+
+
+def instagram_problem(ex: dict) -> str | None:
+    """Why Instagram must not get this export (Instagram ranks reposted, unedited clips down), or None."""
+    o = ex.get("originality") or {}
+    if not o.get("hook"):
+        return "needs a hook: leave the hook on (Make it original) and export again"
+    if not ((ex.get("reframe") or {}).get("applied") or o.get("voiceover")):
+        return "needs a reframe (zooms / layout steps) or your voice-over as well as the hook: switch Reframe on or record a voice-over, then export again"
+    return None
+
+
+def _span(meta: dict, ex: dict | None) -> tuple[float, float] | None:
+    """The export's stretch of the live stream in wall-clock seconds (the draft start + the trim)."""
+    from datetime import datetime
+    try:
+        base = datetime.fromisoformat(str(meta["created"])).timestamp()
+        return base + float(ex["start"]), base + float(ex["end"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def same_moment_posts(store, meta: dict, ex: dict, skip: tuple = ()) -> list[str]:
+    """Earlier posts (any clip, any platform) of the same moment of the same stream. `skip` = platforms of THIS clip to leave out."""
+    me = _span(meta, ex)
+    if not me:
+        return []
+    out = []
+    for _, m in store._metas():
+        if m.get("channel") != meta.get("channel"):
+            continue
+        exs = {e.get("file"): e for e in m.get("exports") or []}
+        for pl, sh in (m.get("shares") or {}).items():
+            if sh.get("status") not in POSTED or (m.get("id") == meta.get("id") and pl in skip):
+                continue
+            other = _span(m, exs.get(sh.get("file"))) or _span(m, {"start": 0, "end": m.get("duration_s") or 0})
+            if not other:
+                continue
+            ov = min(me[1], other[1]) - max(me[0], other[0])
+            if ov >= min(5.0, 0.3 * min(me[1] - me[0], other[1] - other[0])):
+                title = str((m.get("description") or {}).get("title") or m.get("id"))[:50]
+                out.append(f"{PLATFORMS.get(pl, {}).get('label', pl)}: \"{title}\" ({str(sh.get('at', ''))[:16].replace('T', ' ')})")
+    return out
+
+
+def precheck(store, clip_id: str, file: str, platforms: list[str]) -> dict:
+    """What the page shows before you share: Instagram blocks and same-moment warnings."""
+    path, meta = store.find(clip_id)
+    ex = next((e for e in (meta or {}).get("exports", []) if e["file"] == file), None)
+    if not path or not ex:
+        raise ShareError("clip or export not found")
+    out = {"block": None, "same_moment": [], "original": original(ex)}
+    if "instagram" in platforms:
+        out["block"] = instagram_problem(ex)
+        out["same_moment"] = same_moment_posts(store, meta, ex, skip=("instagram",))
+    return out
+
+
 @dataclass
 class ShareRequest:
     clip_id: str
@@ -143,6 +209,11 @@ def run(store, req: ShareRequest) -> dict[str, dict]:
         raise ShareError("choose at least one platform: " + ", ".join(PLATFORMS))
     jobs, problems = [], []
     camp = campaigns.for_channel(meta.get("channel"))          # a live paid campaign covers this streamer: its rules must pass
+    if "instagram" in plats:                                   # enforced here, so the page, Autopilot and any script obey it
+        why = instagram_problem(ex)
+        if why:
+            problems.append(f"{PLATFORMS['instagram']['label']}: {why}")
+    dupes = same_moment_posts(store, meta, ex, skip=tuple(plats)) if "instagram" in plats else []
     for pl in plats:
         t = req.texts.get(pl) or {}
         from .describe import with_mention
@@ -171,6 +242,8 @@ def run(store, req: ShareRequest) -> dict[str, dict]:
             r = Result(False, "failed", f"{type(e).__name__}: {e}")
         if camp and r.status in ("done", "draft", "opened") and not r.paid_flag:
             r.paid_flag = campaigns.FLAG_HELP[job.platform]
+        if job.platform == "instagram" and dupes:
+            r.message = (r.message + " | " if r.message else "") + "⚠ this moment was already posted: " + "; ".join(dupes)
         results[job.platform] = {"status": r.status, "message": r.message, "url": r.url, "ok": r.ok, "title": job.title, "text": job.text,
                                  **({"paid_flag": r.paid_flag, "campaign": camp["id"]} if camp else {})}
         record(store, req.clip_id, job.platform, r, prov.name, ex["file"], req.actor, camp["id"] if camp else None)

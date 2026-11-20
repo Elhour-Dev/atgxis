@@ -481,6 +481,12 @@ class Autopilot:
                 mine = suggest(m, self.store.cfg, words or None, (start, end), rules=rules)
                 title = title if style.title_source(d) != "auto" else mine["title"]       # never replace text you wrote
                 body = body if style.body_edited(d) else mine["body"]
+            ig = share.instagram_problem(ex) if "instagram" in todo else None
+            if ig:                                                 # Instagram only gets original clips: post to the others
+                todo = [pl for pl in todo if pl != "instagram"]
+                log_event(t=now, clip=cid, action="skip_platform", platforms=["instagram"], message="Instagram Reels " + ig)
+                if not todo:
+                    return self._failed(p, cid, MAX_ATTEMPTS, "Instagram Reels " + ig, now)
             texts = {pl: {"title": title, "body": body} for pl in todo}
             self._set(p, "posting", attempts=attempts, platforms=todo, **({"rules": ver} if ver else {}))
             log_event(t=now, clip=cid, action="attempt", platforms=todo, p=prob, title=title[:200], **({"rules": ver} if ver else {}))      # written BEFORE anything is sent

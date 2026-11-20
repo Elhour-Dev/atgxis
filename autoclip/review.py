@@ -313,7 +313,10 @@ function render(){
         const tx=getText(),texts={};for(const k of chosen)texts[k]={title:tx.title,body:tx.body};
         const prov=shareInfo.providers.find(p=>p.name===psel.value)||{label:psel.value,automatic:false};
         const names=chosen.map(k=>shareInfo.platforms[k].label).join(', ');
-        if(!confirm('Share this clip?'+NL+NL+'File: '+fsel.value+NL+'Title: '+tx.title+NL+'To: '+names+NL+'Method: '+prov.label+NL+NL+(prov.automatic?'It is uploaded to your connected account(s) the moment you press OK.':'Nothing is posted or opened until you press OK.')))return;
+        let warnIg='';const ck=await fetch('/api/share/check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:c.id,file:fsel.value,platforms:chosen})});
+        if(ck.ok){const k=await ck.json();if(k.block){alert('Instagram Reels '+k.block+'.'+NL+NL+'Untick Instagram to post to the others now.');return}
+          if(k.same_moment.length)warnIg=NL+NL+'⚠ This moment was already posted:'+NL+k.same_moment.join(NL)+NL+'Instagram may show a repeat to fewer people.'}
+        if(!confirm('Share this clip?'+NL+NL+'File: '+fsel.value+NL+'Title: '+tx.title+NL+'To: '+names+NL+'Method: '+prov.label+NL+NL+(prov.automatic?'It is uploaded to your connected account(s) the moment you press OK.':'Nothing is posted or opened until you press OK.')+warnIg))return;
         go.disabled=true;go.textContent='Working…';
         const send=async plats=>{const r=await fetch('/api/share',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:c.id,file:fsel.value,platforms:plats,texts,provider:psel.value,force:force.checked})});
           if(!r.ok){alert(await r.text());return null}return (await r.json()).results};
@@ -1320,6 +1323,12 @@ def make_handler(store: Store):
                                                               bool(body.get("force"))))
                     return self._send(200, json.dumps({"results": res}).encode())
                 except (share.ShareError, KeyError, TypeError) as e:
+                    return self._send(400, str(e).encode(), "text/plain")
+            elif path == "/api/share/check":
+                try:
+                    return self._send(200, json.dumps(share.precheck(store, str(body.get("id")), str(body.get("file")),
+                                                                  list(body.get("platforms") or [])), ensure_ascii=False).encode())
+                except (share.ShareError, TypeError) as e:
                     return self._send(400, str(e).encode(), "text/plain")
             elif path == "/api/accounts/save":
                 try:

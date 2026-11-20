@@ -8,7 +8,8 @@ const money=x=>'$'+(Math.round((x||0)*100)/100).toFixed(2);
 function cpLeft(s){if(s<=0)return 'deadline passed';return Math.ceil(s/60)+' min left'}
 function cpBadge(c){
   const k=c.campaign,ex=(c.exports||[]).slice(-1)[0]||{},o=ex.originality||{},tags=[];
-  if(o.voiceover)tags.push('🎙 Your voice-over');if(o.hook)tags.push('🪝 Hook text');
+  if(o.voiceover)tags.push('🎙 Your voice-over');if(o.hook)tags.push('🪝 Hook text');if(ex.reframe&&ex.reframe.applied)tags.push('🎬 Reframed');
+  if(o.hook&&((ex.reframe&&ex.reframe.applied)||o.voiceover))tags.unshift('✨ Original');
   if(!k&&!tags.length)return null;
   const box=el('div');box.style.cssText='display:flex;flex-direction:column;gap:4px';
   const r=el('div','row');

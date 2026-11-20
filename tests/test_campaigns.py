@@ -394,7 +394,7 @@ def campaign_export(rig, monkeypatch):
         (p.parent / "made_v_ad.mp4").write_bytes(b"x")
         with rig.store.lock:
             m["exports"] = [{"file": "made_v_ad.mp4", "start": start, "end": end, "vertical": vertical, "captions": captions,
-                             **({"campaign": cp["record"]} if cp["record"] else {})}]
+                             "originality": {"hook": True, "voiceover": False}, "reframe": {"applied": True}, **({"campaign": cp["record"]} if cp["record"] else {})}]
             review._write_json(p, m)
         made.append((start, end))
         return "made_v_ad.mp4"

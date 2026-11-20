@@ -158,6 +158,12 @@ You always get a confirmation first; nothing is opened or uploaded before you pr
 one invalid or not-connected platform blocks the whole request (nothing is uploaded), an already-posted platform is not posted again
 unless you tick "post again", and each result is recorded.
 
+**Instagram only gets original clips.** Instagram shows reposted, unedited clips to fewer people, so an export goes to Instagram Reels
+only when it has a **hook** and either a **reframe** (zooms / layout steps) or **your voice-over**. Such exports are tagged
+**✨ Original** on the card. Otherwise Instagram is refused before anything is uploaded (untick it to post to the others); Autopilot
+posts to your other platforms and skips Instagram for that clip. Before an Instagram post you are also **warned** (not blocked) when
+the same moment of the same stream was already posted anywhere: on another platform, or from another clip that overlaps it.
+
 * **Share assistant** (no setup): opens each platform's upload page, selects the file, copies the caption; you press Post.
 * **⚡ Quick connect + "Post automatically"** (free, fastest to set up): the **⚡ Quick connect** button opens a 4-step guide. You create a
   free [Zernio](https://zernio.com) account, connect Instagram + TikTok there, paste one API key here. No developer apps, no approval waits.
