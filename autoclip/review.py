@@ -17,7 +17,7 @@ from .config import Config
 from .captions import CaptionsUnavailable, build_ass, cached_words, transcribe, words_in_window
 from . import layout as lay
 import html
-from . import accounts, autopilot, autopilot_page, campaigns, campaigns_page, hooks, publish, settings, share, style, taste, zernio      # noqa: F401  (publish / zernio register the 'direct' / 'auto' sharing methods)
+from . import accounts, autopilot, autopilot_page, campaigns, campaigns_page, hooks, publish, quality, reframe_page, settings, share, style, taste, zernio      # noqa: F401  (publish / zernio register the 'direct' / 'auto' sharing methods)
 from .cutter import export_clip, grab_frame, probe_size
 from .describe import suggest as suggest_description
 from .facecam import FacecamUnavailable, detect_facecam
@@ -258,7 +258,7 @@ function render(){
     const ex=el('button','primary','Export clip'),exNote=el('div','note bad');exNote.style.display='none';
     ex.onclick=async()=>{exPending.add(c.id);paintEx(c.id);const ok=await post('/api/export/start',{id:c.id,start:t.start,end:t.end,vertical:t.vertical,captions:t.captions,hook:t.hookOff?'':(t.hook||'auto'),hook_style:t.hookStyle||'',voiceover:!!(t.vo&&c.voiceover)});
       exPending.delete(c.id);await load(false)};          // the server now owns the state: it flips back only when the file is really made
-    r2.append(el('span','grow'),ex);b1.append(el('div','hint','Uses the clip range above. One encode: trim, 9:16 layout and captions together.'),r2,exNote,cpExportExtras(c,t));
+    r2.append(el('span','grow'),ex);b1.append(el('div','hint','Uses the clip range above. One encode: trim, 9:16 layout and captions together.'),r2,exNote,cpExportExtras(c,t),rfBox(c,t));
     if(nx){const e=el('div','row');e.append(el('span','mut','Files:'));for(const x of c.exports){const l=el('a','file',(x.vertical?'9:16 ':'')+(x.captions?'CC ':'')+fmt(x.start)+'-'+fmt(x.end));l.href=fileUrl(c,x.file);l.target='_blank';
       const sf=el('button','sm','📂');sf.title='Show this file in its folder'+(x.copy?' (a copy is also in your final clips folder)':'');sf.onclick=()=>post('/api/reveal',{id:c.id,file:x.file});e.append(l,sf)}b1.append(e)}
     const lb=el('button','sm',layouts[c.channel]?'Edit 9:16 layout for '+c.channel+' ✓':'Set 9:16 layout for '+c.channel+' (webcam + gameplay)');lb.onclick=()=>openLayout(c,v);b1.append(lb);
@@ -561,6 +561,7 @@ function openLayout(c,video){
   sync();renderCap();loadFrame()}
 /*__AP__*/
 /*__CP__*/
+/*__RF__*/
 document.getElementById('s').onchange=()=>{shown=30;render()};
 document.getElementById('upd').onclick=()=>{sig='';lastAct=0;load(true)};
 {const hd=document.querySelector('header.top');let on=false;window.addEventListener('scroll',()=>{const want=on?scrollY>40:scrollY>90;if(want!==on){on=want;hd.classList.toggle('compact',on)}},{passive:true})}
@@ -576,7 +577,7 @@ document.getElementById('purge').onclick=async()=>{if(confirm('Permanently delet
 document.getElementById('folders').onclick=openFolders;document.getElementById('accts').onclick=openAccounts;document.getElementById('quick').onclick=openQuick;Promise.all([loadLayouts(),loadShare()]).then(()=>{load(true);if(!(shareInfo.providers||[]).some(p=>p.automatic&&p.configured)){const sb=document.getElementById('setupBtn');sb.classList.add('dot');sb.title='No account connected for posting yet: open Quick connect or Accounts'}const m=location.hash.match(/connect=([a-z]*)/);if(m)openAccounts(m[1])});(function tick(){setTimeout(async()=>{try{await load(false)}catch(e){}tick()},clips.some(exBusy)?1500:10000)})();
 </script>"""
 
-PAGE = PAGE.replace("/*__AP__*/", autopilot_page.JS).replace("/*__CP__*/", campaigns_page.JS)
+PAGE = PAGE.replace("/*__AP__*/", autopilot_page.JS).replace("/*__CP__*/", campaigns_page.JS).replace("/*__RF__*/", reframe_page.JS)
 
 
 def _write_json(path: Path, data: dict):
@@ -830,6 +831,36 @@ class Store:
         img = grab_frame(src, t, graph)
         if not img:
             raise RuntimeError("could not render the preview")
+        return img
+
+    def export_layout(self, m: dict, vertical: bool) -> tuple[dict | None, dict]:
+        """(layout, campaign plan) exactly as an export of this clip would use them."""
+        layout = LayoutStore(self.root).get(m["channel"]) if vertical else None
+        cp = campaigns.plan(m, layout, vertical, self.cfg)
+        return cp["layout"], cp
+
+    def quality_view(self, cid: str, start: float, end: float, vertical: bool) -> dict:
+        """The card's quality report and the moment shown in the before / after stills (the chat moment, inside the trim)."""
+        p, m = self.find(cid)
+        if not p:
+            raise ValueError("clip not found")
+        self._check_trim(m, start, end)
+        layout, _ = self.export_layout(m, vertical)
+        rep = quality.report(layout or {"mode": self.cfg.vertical_mode}, m.get("res"))
+        if not vertical:                                           # the full frame at its own size: nothing is enlarged
+            rep.update(panels={}, zoom_room={})
+        t = min(max(float(m.get("moment_s") or (start + end) / 2), start), max(start, end - 0.1))
+        return {"t": round(t, 2), "report": rep}
+
+    def after_frame(self, cid: str, t: float, start: float, end: float, vertical: bool) -> bytes:
+        """One frame of the export at time t, rendered through the same filter graph as the export itself."""
+        src, m = self.draft_path(cid)
+        self._check_trim(m, start, end)
+        layout, _ = self.export_layout(m, vertical)
+        graph = lay.chain(layout or {"mode": self.cfg.vertical_mode}, getattr(self.cfg, "sharpen", 0.0)) if vertical else None
+        img = grab_frame(src, t, graph)
+        if not img:
+            raise RuntimeError("could not render the after frame")
         return img
 
     def autodetect(self, cid: str, split: float) -> dict:
@@ -1106,6 +1137,19 @@ def make_handler(store: Store):
                 try:
                     return self._send(200, store.frame(q["id"][0], float(q.get("t", ["0"])[0])), "image/jpeg", {"Cache-Control": "no-store"})
                 except (ValueError, KeyError) as e:
+                    return self._send(400, str(e).encode(), "text/plain")
+                except Exception as e:
+                    return self._send(500, str(e).encode(), "text/plain")
+            if path in ("/api/quality", "/api/after"):
+                q = parse_qs(urlparse(self.path).query)
+                try:
+                    cid, start, end = q["id"][0], float(q["start"][0]), float(q["end"][0])
+                    vertical = q.get("vertical", ["1"])[0] == "1"
+                    if path == "/api/quality":
+                        return self._send(200, json.dumps(store.quality_view(cid, start, end, vertical)).encode())
+                    return self._send(200, store.after_frame(cid, float(q["t"][0]), start, end, vertical), "image/jpeg",
+                                      {"Cache-Control": "no-store"})
+                except (ValueError, KeyError, LayoutError) as e:
                     return self._send(400, str(e).encode(), "text/plain")
                 except Exception as e:
                     return self._send(500, str(e).encode(), "text/plain")

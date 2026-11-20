@@ -12,7 +12,7 @@ import threading
 from pathlib import Path
 
 from .config import Config
-from . import layout as lay
+from . import layout as lay, quality
 from .recorder import Segment, ffmpeg_exe, ffprobe_exe
 
 log = logging.getLogger("autoclip.cut")
@@ -52,8 +52,8 @@ def pick_encoder(cfg: Config) -> str:
 def _vcodec(cfg: Config) -> list[str]:
     enc = pick_encoder(cfg)
     if enc == "libx264":
-        return ["-c:v", "libx264", "-preset", cfg.preset, "-crf", str(cfg.crf), "-pix_fmt", "yuv420p"]
-    q = str(cfg.crf + 1)
+        return ["-c:v", "libx264", "-preset", cfg.preset, "-crf", str(quality.crf(cfg.crf)), "-pix_fmt", "yuv420p"]
+    q = str(min(quality.crf(cfg.crf) + 1, quality.CRF_MAX))      # never softer than CRF 18, whatever config.toml says
     if enc == "h264_nvenc":
         return ["-c:v", enc, "-preset", "p6", "-rc", "vbr", "-cq", q, "-b:v", "0", "-pix_fmt", "yuv420p"]
     if enc == "h264_qsv":

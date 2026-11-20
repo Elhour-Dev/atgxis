@@ -33,7 +33,7 @@ function cpExportExtras(c,t){
   const hrow=el('div','row'),hk=el('input');hk.type='text';hk.maxLength=120;hk.placeholder='Hook: 7 words max, first 2.5 s. Empty = one is made for you at export';hk.value=t.hook||'';hk.oninput=()=>{t.hook=hk.value;t.hookSrc='you';hn.textContent=''};hk.style.cssText='flex:1;min-width:180px';
   const hn=el('span','mut',t.hookSrc&&t.hookSrc!=='you'?'('+t.hookSrc+')':'');
   const rg=el('button','sm','↻ Regenerate');rg.title='Another hook from what the streamer said (Groq) or from the templates';
-  const sugg=async()=>{rg.disabled=true;rg.textContent='…';const r=await jpost('/api/hook/suggest',{id:c.id,start:t.start,end:t.end,avoid:t.hookSeen||[]});rg.disabled=!!t.hookOff;rg.textContent='↻ Regenerate';
+  const sugg=async()=>{rg.disabled=true;rg.textContent='…';const r=await rpost('/api/hook/suggest',{id:c.id,start:t.start,end:t.end,avoid:t.hookSeen||[]});rg.disabled=!!t.hookOff;rg.textContent='↻ Regenerate';
     if(!r.ok){alert(await r.text());return}const d=await r.json();if(!d.text){hn.textContent='No new hook for this language: type one';return}
     t.hookSeen=(t.hookSeen||[]).concat([d.text]);t.hook=d.text;t.hookSrc=d.source;hk.value=d.text;hn.textContent='('+d.source+')'};
   rg.onclick=sugg;
@@ -43,7 +43,7 @@ function cpExportExtras(c,t){
   const dis=()=>{hk.disabled=rg.disabled=sty.disabled=!!t.hookOff};ocb.onchange=()=>{t.hookOff=ocb.checked;dis()};dis();
   const gk=el('button','sm','Groq key…');gk.title='Optional: a free key from console.groq.com writes hooks from what the streamer said';
   gk.onclick=async()=>{const k=prompt('Paste your free Groq API key (console.groq.com, API Keys). It stays on this PC. Leave empty to remove it.');if(k===null)return;
-    const r=await jpost('/api/hook/key',{key:k});alert(r.ok?(k.trim()?'Saved: new hooks are written by Groq.':'Removed: hooks come from the templates.'):await r.text())};
+    const r=await rpost('/api/hook/key',{key:k});alert(r.ok?(k.trim()?'Saved: new hooks are written by Groq.':'Removed: hooks come from the templates.'):await r.text())};
   hrow.append(hk,rg,sty,off,gk,hn);
   box.ontoggle=()=>{openSt.set(c.id+'og',box.open);if(box.open&&!t.hook&&!t.hookOff)sugg()};
   const row=el('div','row'),st=el('span','mut',vo?'Voice-over saved ('+Math.round(vo.size/1024)+' KB)':'No voice-over yet');

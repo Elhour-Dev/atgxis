@@ -383,6 +383,13 @@ make the box bigger). New layouts show the whole gameplay frame (nothing cut off
 Optional `sharpen = 0.5` in `config.toml` sharpens the webcam panel (off by default: it did not improve the measured score, judge by eye).
 If you copied the old `config.example.toml`, the old `quality = "720p60,720p,480p,best"` line is replaced by `best` automatically.
 
+**Quality guard.** Every export is made in **one pass from the original recording** (the buffer and drafts are never re-encoded),
+with lanczos scaling, at 30 fps. The quality never goes below **CRF 18**, even if `config.toml` asks for more (hardware encoders: the
+same cap). Zooms (see *Reframe*) never enlarge the stream's own pixels more than **1.5x**: a panel that your layout already enlarges
+more than that gets no zoom, and a light sharpen is added only while zoomed. Open **Reframe & quality** on a card and press
+**Show before / after** to see the stream frame next to the finished 9:16 frame at the chat moment, with how much each panel is
+enlarged and its zoom room. Below 1080p the box warns that zooms are small or off.
+
 **Speed:** the encoder is chosen automatically (NVIDIA / Intel / AMD hardware encoder if it really works, else CPU), runs at
 below-normal priority so your game/stream never stutters, and loudness is normalized for social platforms.
 
