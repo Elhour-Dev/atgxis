@@ -191,3 +191,20 @@ def test_typed_hooks_obey_the_rules_and_a_kept_suggestion_keeps_its_source(tmp_p
     store.export("ch/s/c", 2.0, 9.0, False, False, hook="Watch closely… chat lost it", hook_src="template")   # re-use is fine
     rec = json.loads((d / "c.clip.json").read_text())["exports"][-1]
     assert rec["hook"]["source"] == "template"
+
+
+def test_a_long_hook_gets_room_for_all_its_lines_or_is_refused():
+    from autoclip import reframe
+    assert "48 characters" in hooks.problem("Unglaubliche Wendung: Streamerin verliert komplett ihre Fassung")
+    text = "Reste jusqu'au bout… personne ne s'y attendait"                  # a built-in hook that wraps to 3 lines
+    screen = reframe.hook_screen({"phases": [[0.0, 2.5]]}, True)
+    for disc in (None, "Ad"):
+        info = {}
+        ass = campaigns.overlay_ass(None, True, "Arial", 30, disclosure=disc, hook=text, protected=screen, info=info)
+        if not info["hook"]:
+            continue
+        line = next(x for x in ass.splitlines() if ",Hook," in x)
+        size = int(next(x for x in ass.splitlines() if x.startswith("Style: Hook,")).split(",")[2])
+        y = int(line.split("\\pos(")[1].split(",")[1].split(")")[0])
+        bottom = y + size * (1.2 * hooks.lines(text, 1080, size) + 0.3)
+        assert all(bottom <= a or y >= b for a, b in screen), (disc, y, size)

@@ -428,7 +428,7 @@ def move_captions(ass: str | None, p: dict | None) -> str | None:
         a = int(m[2]) * 3600 + int(m[3]) * 60 + float(m[4])
         b = int(m[5]) * 3600 + int(m[6]) * 60 + float(m[7])
         inside = sum(max(0.0, min(b, q1) - max(a, q0)) for q0, q1 in p["phases"])
-        if inside * 2 < max(b - a, 0.01):
+        if inside <= 0:                                  # any caption shown during the webcam-only part moves
             return m[0]
         return m[0][: m.start(9) - m.start(0)] + f"{m[9]},{y})"
     return _DIAL.sub(sub, ass)

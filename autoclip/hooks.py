@@ -20,6 +20,7 @@ from pathlib import Path
 log = logging.getLogger("autoclip.hooks")
 
 MAX_WORDS = 7
+MAX_CHARS = 48
 HISTORY = 50
 HOOK_S = 2.5
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
@@ -110,6 +111,8 @@ def problem(text: str, recent: list[str] | tuple = ()) -> str | None:
         return "empty"
     if len(t.split()) > MAX_WORDS:
         return f"more than {MAX_WORDS} words"
+    if len(t) > MAX_CHARS:
+        return f"longer than {MAX_CHARS} characters (too long to read in 2.5 seconds)"
     if _CLAIMS.search(t):
         return "states something the clip cannot prove"
     if norm(t) in {norm(r) for r in recent}:
@@ -245,11 +248,23 @@ def suggest(words: list | None, lang: str, avoid: list[str] | None = None, seed:
 
 
 # ---------------------------------------------------------------------------------------------------- burning it in
-def place(W: int, H: int, protected: list[tuple[float, float]], size: int) -> int | None:
-    """Top y (pixels) for a hook block of 2 lines at `size`: the highest spot inside the safe zone (below the platform's top bar
-    and above its bottom buttons) that does not touch any protected band (y0, y1): facecam, captions, disclosure, handle.
+def lines(text: str, W: int, size: int) -> int:
+    """How many lines the hook wraps to (bold Arial is about 0.58 x size wide per character; the margins are 6% each side)."""
+    per = max(4, int(W * 0.88 / (size * 0.58)))
+    n, cur = 1, 0
+    for w in clean(text).split():
+        if cur and cur + 1 + len(w) > per:
+            n, cur = n + 1, len(w)
+        else:
+            cur = cur + (1 if cur else 0) + len(w)
+    return n
+
+
+def place(W: int, H: int, protected: list[tuple[float, float]], size: int, n_lines: int = 2) -> int | None:
+    """Top y (pixels) for a hook block of `n_lines` lines at `size`: the highest spot inside the safe zone (below the platform's top
+    bar and above its bottom buttons) that does not touch any protected band (y0, y1): facecam, captions, disclosure, handle.
     None when there is no such spot."""
-    block = int(size * 2.5)
+    block = int(size * (1.2 * n_lines + 0.3))
     top, bottom = int(H * 0.09), int(H * 0.78)
     for y in range(top, bottom - block + 1, max(4, H // 200)):
         if all(y + block <= a or y >= b for a, b in protected):
@@ -265,7 +280,7 @@ def ass_event(text: str, style_name: str, W: int, H: int, protected: list[tuple[
     y = None
     for k in (1.0, 0.8, 0.62):
         size = round(H * (0.05 if H > W else 0.065) * k)
-        y = place(W, H, protected, size)
+        y = place(W, H, protected, size, max(2, lines(text, W, size)))
         if y is not None:
             break
     if y is None:

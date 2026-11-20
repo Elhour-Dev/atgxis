@@ -199,7 +199,7 @@ def test_hook_over_a_webcam_only_intro_sits_above_the_webcam_and_off_the_moved_c
     info = {}
     ass = campaigns.overlay_ass(None, True, "Arial", 30, hook="Wait for it", protected=screen, info=info)
     line = next(x for x in ass.splitlines() if ",Hook," in x)
-    y = int(line.split("\pos(")[1].split(",")[1].split(")")[0])
+    y = int(line.split("\\pos(")[1].split(",")[1].split(")")[0])
     size = round(1920 * 0.05)
     assert info["hook"] and y + size * 2.5 <= 1920 * reframe.FACE_BOX[0]                    # above the webcam, so above captions
     assert reframe.hook_screen({"phases": [[20.0, 30.0]]}, True) is None

@@ -346,7 +346,7 @@ are tagged on the card (🎙 / 🪝). The voice-over file is kept next to the cl
   streamer said. Without a key, or when Groq fails, it is picked from built-in templates in the clip's language (English, French,
   Spanish, German, Portuguese; the caption language setting wins, else the transcript's words decide). Your own hook lines from your
   learned style are tried first. Other languages without a key: type the hook yourself.
-- **Rules for every hook:** at most 7 words, makes people curious, and states nothing the clip cannot prove (words like *arrested,
+- **Rules for every hook:** at most 7 words and 48 characters, makes people curious, and states nothing the clip cannot prove (words like *arrested,
   died, leaked, official*, money amounts are refused). A made-for-you hook is never one of your last 50 (each language has more than
   50 built-in ones). A hook you type must follow the first two rules too; re-using your own is fine.
 - **The look:** bold, outlined, top-centre, popping in. Four styles (white, yellow, red outline, dark on white) take turns.
