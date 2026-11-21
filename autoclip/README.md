@@ -56,7 +56,7 @@ python -m autoclip review                                   # later: opens the r
 * **Keyboard:** click a card (or use **← →**, or **J / L**) to pick it, then **K** keep, **T** trash, **U** undo, **Space** play/pause.
   After Keep or Trash the next clip is picked for you, so you can review a whole list without the mouse.
   Posted a clip already? Press **Archive (free space)** instead of Trash: it deletes that clip's draft, exports and caption data (not the
-  copy in your final clips folder), keeps it listed under "Archived", and counts it as a Keep.
+  copy in your final clips folder), keeps it listed under "Archived", and counts it as a Keep. If you only opened a platform's upload page, press **Mark as posted** first.
   Keep / Trash also teach the [🤖 Autopilot](#-autopilot-it-learns-what-you-keep-and-posts-the-good-ones-for-you), which can learn your taste and post the good clips for you.
 
 ## Several streams at once

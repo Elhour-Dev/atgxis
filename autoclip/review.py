@@ -237,7 +237,7 @@ function render(){
     tb.append(track,tr1,ft);sync();card.append(tb);
     // ---- what happened in chat
     const sp=c.spike||{},info=el('details','fine');info.open=!!openSt.get(c.id+'why');info.ontoggle=()=>openSt.set(c.id+'why',info.open);info.append(el('summary',null,'Why this clip'));
-    info.append(el('div','mut',sp.peak+' chatters at once (normal '+Math.round(sp.baseline)+') · '+sp.msgs+' msgs'+(c.loudness_jump_db!=null?' · audio '+(c.loudness_jump_db>0?'+':'')+c.loudness_jump_db+' dB':'')+(c.res?' · '+c.res[1]+'p':'')));
+    info.append(el('div','mut',(sp.peak!=null?sp.peak+' chatters at once (normal '+Math.round(sp.baseline||0)+') · '+(sp.msgs||0)+' msgs':'No chat data for this clip')+(c.loudness_jump_db!=null?' · audio '+(c.loudness_jump_db>0?'+':'')+c.loudness_jump_db+' dB':'')+(c.res?' · '+c.res[1]+'p':'')));
     if(sp.top&&sp.top.length){const tg=el('div','tags');for(const x of sp.top.slice(0,8))tg.append(el('span','tag',x[0]+' ×'+x[1]));info.append(tg)}
     card.append(info);
     if(c.res&&c.res[1]<1000)card.append(el('div','note warn','⚠ Recorded at '+c.res[1]+'p, so it cannot look sharp when enlarged to 1080x1920. Clips recorded after the update use the best quality the stream offers.'));
@@ -247,7 +247,7 @@ function render(){
     if(c.status!=='keep')dec.append(big('Keep','keep','good','K'));
     if(c.status!=='trash')dec.append(big('Trash','trash','bad','T'));
     if(c.status!=='new')dec.append(big('Undo','new','','U'));
-    if(Object.values(c.shares||{}).some(x=>['done','draft','opened'].includes(x.status))){
+    if(Object.values(c.shares||{}).some(x=>['done','draft'].includes(x.status))){
       const dn=el('button','big','Archive (free space)');dn.title='Posted already: delete this clip'+String.fromCharCode(39)+'s video files here to free disk space. Counts as a Keep for learning. Copies in your final clips folder are not touched.';
       dn.onclick=async()=>{if(!confirm('Delete the draft and export videos of this clip to free space?'+NL+NL+'It stays listed under Archived and counts as a Keep. Copies in your final clips folder are kept.'))return;
         await post('/api/status',{id:c.id,status:'done'});load(true)};dec.append(dn)}
@@ -761,8 +761,8 @@ class Store:
             if not p:
                 return False
             if status == "done":
-                if not any(sh.get("status") in ("done", "draft", "opened") for sh in (m.get("shares") or {}).values()):
-                    return False
+                if not any(sh.get("status") in ("done", "draft") for sh in (m.get("shares") or {}).values()):
+                    return False                                  # "opened" uploaded nothing: this may be the only copy
                 if (self.jobs.get(cid) or {}).get("state") in ("queued", "encoding"):
                     return False                                  # an export is still writing this clip's files
                 names = [m.get("file")] + [e.get("file") for e in m.get("exports") or []] + [(m.get("voiceover") or {}).get("file")]

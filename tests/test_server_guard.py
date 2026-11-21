@@ -47,7 +47,7 @@ def test_post_from_another_origin_is_refused(port, origin):
 @pytest.mark.parametrize("origin", ["http://127.0.0.1:{port}", "http://localhost:{port}"])
 def test_post_from_the_page_itself_is_allowed(port, origin):
     h = {"Origin": origin.format(port=port), "Content-Type": "application/json"}
-    assert ask(port, "POST", "/api/status", h, b"{}") != 403
+    assert ask(port, "POST", "/api/status", h, b"{}") == 400                                    # reached the handler: no such clip
 
 
 def test_post_with_a_foreign_host_is_refused(port):
