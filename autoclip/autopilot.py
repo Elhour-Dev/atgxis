@@ -463,12 +463,12 @@ class Autopilot:
                 if not _latest_vertical(p, m) and getattr(self.store.cfg, "vertical", "auto") == "auto" and now - _created(m) < EXPORT_WAIT_S:
                     return None                                    # the recorder is probably still rendering the vertical version
                 try:
-                    self.store.export(cid, start, end, True, caps, by="autopilot")
+                    self.store.export(cid, start, end, True, caps, by="autopilot", hook="auto")
                 except Exception as e:                             # no speech after all / no speech-to-text: post it without captions
                     if not caps or not (isinstance(e, ValueError) or type(e).__name__ == "CaptionsUnavailable"):
                         raise
                     caps = False
-                    self.store.export(cid, start, end, True, False, by="autopilot")
+                    self.store.export(cid, start, end, True, False, by="autopilot", hook="auto")
                 p2, m2 = self.store.find(cid)
                 ex = _latest_vertical(p2, m2, (start, end, caps if want[2] is not None else None) if want else None, camp) if p2 else None
                 m = m2 or m
@@ -481,6 +481,12 @@ class Autopilot:
                 mine = suggest(m, self.store.cfg, words or None, (start, end), rules=rules)
                 title = title if style.title_source(d) != "auto" else mine["title"]       # never replace text you wrote
                 body = body if style.body_edited(d) else mine["body"]
+            ig = share.instagram_problem(ex) if "instagram" in todo else None
+            if ig:                                                 # Instagram only gets original clips: post to the others
+                todo = [pl for pl in todo if pl != "instagram"]
+                log_event(t=now, clip=cid, action="skip_platform", platforms=["instagram"], message="Instagram Reels " + ig)
+                if not todo:
+                    return self._failed(p, cid, MAX_ATTEMPTS, "Instagram Reels " + ig, now)
             texts = {pl: {"title": title, "body": body} for pl in todo}
             self._set(p, "posting", attempts=attempts, platforms=todo, **({"rules": ver} if ver else {}))
             log_event(t=now, clip=cid, action="attempt", platforms=todo, p=prob, title=title[:200], **({"rules": ver} if ver else {}))      # written BEFORE anything is sent

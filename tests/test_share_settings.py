@@ -67,7 +67,7 @@ def make_root(tmp_path, vertical=True, size_ok=True):
     (d / "c.mp4").write_bytes(b"draft")
     (d / "c_v.mp4").write_bytes(b"final clip bytes")
     meta = {"id": "ch/s/c", "file": "c.mp4", "channel": "ch", "status": "new", "score": 1, "duration_s": 30.0, "exports": [
-        {"file": "c_v.mp4", "start": 0, "end": 30, "vertical": vertical, "captions": False}],
+        {"file": "c_v.mp4", "start": 0, "end": 30, "vertical": vertical, "captions": False, "originality": {"hook": True, "voiceover": False}, "reframe": {"applied": True}}],
         "created": "2026-01-01T00:00:00", "source_url": "https://twitch.tv/ch", "spike": {}}
     (d / "c.clip.json").write_text(json.dumps(meta))
     return tmp_path / "root"

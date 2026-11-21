@@ -158,6 +158,12 @@ You always get a confirmation first; nothing is opened or uploaded before you pr
 one invalid or not-connected platform blocks the whole request (nothing is uploaded), an already-posted platform is not posted again
 unless you tick "post again", and each result is recorded.
 
+**Instagram only gets original clips.** Instagram shows reposted, unedited clips to fewer people, so an export goes to Instagram Reels
+only when it has a **hook** and either a **reframe** (zooms / layout steps) or **your voice-over**. Such exports are tagged
+**✨ Original** on the card. Otherwise Instagram is refused before anything is uploaded (untick it to post to the others); Autopilot
+posts to your other platforms and skips Instagram for that clip. Before an Instagram post you are also **warned** (not blocked) when
+the same moment of the same stream was already posted anywhere: on another platform, or from another clip that overlaps it.
+
 * **Share assistant** (no setup): opens each platform's upload page, selects the file, copies the caption; you press Post.
 * **⚡ Quick connect + "Post automatically"** (free, fastest to set up): the **⚡ Quick connect** button opens a 4-step guide. You create a
   free [Zernio](https://zernio.com) account, connect Instagram + TikTok there, paste one API key here. No developer apps, no approval waits.
@@ -331,9 +337,25 @@ for that streamer the moment the campaign ends, reaches its cap or you set `budg
 
 ### Your voice-over and hook text (originality)
 Platform programmes pay more for clips with your own touch. In **Export**, open **Make it original**: type a **hook** (big text for the
-first 3 seconds) and **🎙 Record** a voice-over in the page or **Pick a file** (webm / ogg / mp3 / wav / m4a, up to 25 MB). Tick
+first 2.5 seconds) and **🎙 Record** a voice-over in the page or **Pick a file** (webm / ogg / mp3 / wav / m4a, up to 25 MB). Tick
 **Use my voice-over** and export: your voice starts with the clip and the stream sound goes quieter while you talk. Clips that have them
 are tagged on the card (🎙 / 🪝). The voice-over file is kept next to the clip and deleted with it (Done / Delete trashed files).
+
+**Hooks are made for you.** Leave the hook empty and every export (yours, Autopilot's and the automatic 9:16 render) gets one:
+- **Where it comes from:** with a free **Groq key** (press **Groq key…**, get one at console.groq.com) it is written from what the
+  streamer said. Without a key, or when Groq fails, it is picked from built-in templates in the clip's language (English, French,
+  Spanish, German, Portuguese; the caption language setting wins, else the transcript's words decide). Your own hook lines from your
+  learned style are tried first. Other languages without a key: type the hook yourself.
+- **Rules for every hook:** at most 7 words and 48 characters, makes people curious, and states nothing the clip cannot prove (words like *arrested,
+  died, leaked, official*, money amounts are refused). A made-for-you hook is never one of your last 50 (each language has more than
+  50 built-in ones). A hook you type must follow the first two rules too; re-using your own is fine.
+- **The look:** bold, outlined, top-centre, popping in. Four styles (white, yellow, red outline, dark on white) take turns.
+- **Where it goes:** inside the platforms' safe zone, never over the webcam panel, the captions or the ad-disclosure corner (the
+  disclosure keeps its own top-left corner). When space is tight it gets smaller; if it still cannot fit, no hook is burned (and
+  the export is not counted as having one).
+- **On the card:** edit the text, **↻ Regenerate**, pick a **style**, or tick **No hook**.
+
+The key is kept in `accounts.json` on this PC; the hook history is `hooks.json` in the style folder.
 
 ## Vertical clips: webcam on top, gameplay below (Reels / TikTok / Shorts)
 Every clip is exported **automatically as a ready 1080x1920, 30 fps, exactly 30 s video**. Until you teach it where a streamer's
@@ -349,6 +371,26 @@ Other options: whole screen on a blurred background, plain center crop, adjustab
 **Subtitle position:** in the same editor, drag the **green box** on the vertical preview to where subtitles should appear
 (its height sets the text size; the sample text inside shows how it will look and wrap). Saved per streamer along with the layout.
 Without a saved box, captions sit on the line between webcam and gameplay.
+
+### Reframe: zooms, layout steps and a crop that follows the action
+Every 9:16 export (yours, Autopilot's and the automatic one) moves like a hand-edited clip, made from the stream's own sound and
+picture (no extra program needed):
+- **Zooms:** an eased **punch-in** on the loudest moments and the moments the streamer moves most on webcam; a **slow push-in**
+  when the sound builds up before a peak. At most **2 zooms in any 30 seconds**. Zooms need a saved webcam layout (**Set layout**):
+  on the blurred full frame the app does not know where the webcam is, so it does not zoom there (a zoom could cut it off).
+- **Layout steps** (split layouts): **webcam only** (the webcam alone, centred over a blurred stream) for the whole hook, **split**
+  for the action, **webcam only** again for the reaction at the end. While the webcam is alone, captions move below it and the hook
+  stays above it. The webcam is not shown bigger than in the split layout: that would enlarge it past the 1.5x quality limit.
+- **Follow gameplay:** the gameplay crop slides (smoothly, never jumpy) toward where the action is on screen.
+- **Freeze on peak** (off by default): the peak frame holds for half a second; the clip keeps its length and the sound stays in sync.
+- **Safety:** a zoom never enlarges the stream more than 1.5x (see *Video quality*), never touches a panel a paid campaign needs
+  whole (`must_show`), and nothing is ever mirrored. Captions, hook and the ad disclosure are drawn on the finished frame, so a
+  zoom can never crop them.
+- **Different every clip:** zoom sizes, timings and layout steps are random per clip, but the same clip always gets the same
+  choices, so the before / after still matches the export. **🎲 Shuffle** picks new ones.
+- **On the card**, under **Reframe & quality**: switches for Reframe, Zooms, Webcam only → split → webcam only, Follow gameplay and
+  Freeze on peak. Exports with a reframe get `_rf` in their file name. The analysis is cached next to the draft
+  (`<clip>.signals.json`) and deleted with it.
 
 ## Post text (title + description) for every clip
 Open **② Post text** on any clip. Titles are built from what is specific to that clip: the phrase chat was spamming ("NO WAY", "KEKW"),
@@ -368,6 +410,13 @@ resolution (clips recorded at 720p show a warning), and the layout editor shows 
 make the box bigger). New layouts show the whole gameplay frame (nothing cut off) instead of a tight crop; you can switch back in the editor.
 Optional `sharpen = 0.5` in `config.toml` sharpens the webcam panel (off by default: it did not improve the measured score, judge by eye).
 If you copied the old `config.example.toml`, the old `quality = "720p60,720p,480p,best"` line is replaced by `best` automatically.
+
+**Quality guard.** Every export is made in **one pass from the original recording** (the buffer and drafts are never re-encoded),
+with lanczos scaling, at 30 fps. The quality never goes below **CRF 18**, even if `config.toml` asks for more (hardware encoders: the
+same cap). Zooms (see *Reframe*) never enlarge the stream's own pixels more than **1.5x**: a panel that your layout already enlarges
+more than that gets no zoom, and a light sharpen is added only while zoomed. Open **Reframe & quality** on a card and press
+**Show before / after** to see the stream frame next to the finished 9:16 frame at the chat moment, with how much each panel is
+enlarged and its zoom room. Below 1080p the box warns that zooms are small or off.
 
 **Speed:** the encoder is chosen automatically (NVIDIA / Intel / AMD hardware encoder if it really works, else CPU), runs at
 below-normal priority so your game/stream never stutters, and loudness is normalized for social platforms.

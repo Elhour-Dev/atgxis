@@ -181,7 +181,7 @@ def test_three_streams_spike_together_every_clip_is_saved_while_encodes_are_busy
     gate = threading.Event()
     started = []
 
-    def slow_export(src, out, start, end, cfg, vertical=False, ass_text=None, layout=None, errors=None):
+    def slow_export(src, out, start, end, cfg, vertical=False, ass_text=None, layout=None, errors=None, **kw):
         started.append(out.name)
         gate.wait(120)                                           # a long 9:16 render that holds the (single) encode slot
         out.write_bytes(b"fake")

@@ -38,7 +38,8 @@ def write_clip(root: Path, m: dict, export: bool = True) -> Path:
     m = dict(m)
     if export:
         (d / f"{stem}_v.mp4").write_bytes(b"vertical clip")
-        m["exports"] = [{"file": f"{stem}_v.mp4", "start": m["suggest_start_s"], "end": m["suggest_end_s"], "vertical": True, "captions": False}]
+        m["exports"] = [{"file": f"{stem}_v.mp4", "start": m["suggest_start_s"], "end": m["suggest_end_s"], "vertical": True, "captions": False,
+                         "originality": {"hook": True, "voiceover": False}, "reframe": {"applied": True}}]                    # hook + reframe: Instagram may get it
     m["description"] = {"title": f"Title of {stem}", "body": "Body #fyp", "alts": [], "category": "funny"}
     p = d / f"{stem}.clip.json"
     p.write_text(json.dumps(m), encoding="utf-8")
