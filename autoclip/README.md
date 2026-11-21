@@ -321,7 +321,8 @@ Instagram, Zernio and the Share assistant do not set it: the card lists each fla
 
 **After posting**: every campaign post is saved with its link (paste it when the platform gives none) and goes on the **To submit**
 list. The list has **one row per clip**: **Copy all links** (one per line, ready to paste into the campaign), **Open campaign**, and a
-**Submitted** tick per link. A post that only reached your drafts / inbox (or the Share assistant) goes on the list when you press
+**Submitted** tick per link. A link you typed stays in its box until it is saved, even when the window updates; changing that post's
+status under **Posts** saves it too. A post that only reached your drafts / inbox (or the Share assistant) goes on the list when you press
 **Mark as posted**, so the 30 minutes start when it is really public. You get a desktop notification when it is posted; the row turns
 red 25 minutes after the clip's **earliest** post (most campaigns want the link within 30), and the page warns you once more if you
 allowed its alerts. Under **Posts** on each campaign, mark each post

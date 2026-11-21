@@ -75,17 +75,22 @@ async function openCampaigns(){
   const close=el('button',null,'Close');box.append(close);
   document.body.append(ov);
   let S=null,editing=null,flash=null;
-  let dirty=false;                             // a link you pasted but did not save yet: no background redraw may wipe it
+  const drafts=new Map();                      // links you typed but did not save yet: post id -> {text, base: the saved link when typed}
   let advOpen=false;                           // the Advanced fold stays as you left it across redraws
   let form=null;                               // null = the lists; -1 = a new campaign; n = editing entry n of campaigns.json
   const openPosts=new Set();                   // campaigns whose post list you opened: survives the background redraw
-  const iv=setInterval(()=>{if(!ov.isConnected){clearInterval(iv);return}const ae=document.activeElement;if(form===null&&!dirty&&!(body.contains(ae)&&ae.tagName!=='SUMMARY'))refresh()},15000);
+  const iv=setInterval(()=>{if(!ov.isConnected){clearInterval(iv);return}const ae=document.activeElement;if(form===null&&!(body.contains(ae)&&ae.tagName!=='SUMMARY'))refresh()},15000);
   close.onclick=()=>{clearInterval(iv);ov.remove();sig='';load(true);cpPoll()};
-  async function refresh(){S=await (await fetch('/api/campaigns')).json();if(form===null)paint()}     // never redraw an open form
+  let lane=Promise.resolve(),waiting=null;     // refreshes and link saves run one at a time, so an old reply can never land after a save
+  const inLane=f=>{const p=lane.then(f);lane=p.catch(()=>{});return p};
+  function refresh(){if(waiting)return waiting;return waiting=inLane(async()=>{waiting=null;S=await (await fetch('/api/campaigns')).json();if(form===null)paint()})}     // never redraw an open form
+  const postIn=id=>{for(const g of S.to_submit)for(const p of g.posts)if(p.id===id)return p;return null};
   const jpost=async(u,d)=>fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});
-  function paint(){const old=[...body.querySelectorAll('summary')],at=old.indexOf(document.activeElement);       // a redraw keeps keyboard focus on the fold title
+  function paint(){for(const id of [...drafts.keys()])if(!postIn(id))drafts.delete(id);
+    const ae=document.activeElement,at=[...body.querySelectorAll('summary')].indexOf(ae),pid=body.contains(ae)&&ae.dataset?ae.dataset.post:null,c1=pid?ae.selectionStart:0,c2=pid?ae.selectionEnd:0;
     body.replaceChildren(...(form!==null?[formView()]:[...(S.to_submit.length?[todo()]:[]),mine(),file()]));
-    if(at>=0){const n=body.querySelectorAll('summary')[at];if(n)n.focus({preventScroll:true})}}
+    if(pid){const n=[...body.querySelectorAll('input[data-post]')].find(i=>i.dataset.post===pid);if(n){n.focus({preventScroll:true});n.setSelectionRange(c1,c2)}}     // a redraw keeps your cursor
+    else if(at>=0){const n=body.querySelectorAll('summary')[at];if(n)n.focus({preventScroll:true})}}
   const slug=s=>String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,40)||'campaign';   // = campaigns._slug
   function rawList(){if(!S.exists)return [];try{const d=JSON.parse(S.text),a=Array.isArray(d)?d:(d&&d.campaigns);return Array.isArray(a)?a:null}catch(e){return null}}
   const rawId=r=>slug(r&&(r.id||r.name));
@@ -174,20 +179,24 @@ async function openCampaigns(){
   function todo(){
     const sec=el('div','acc'),n=S.to_submit.reduce((a,g)=>a+g.posts.length,0);sec.append(el('b',null,'To submit ('+n+')'));
     for(const g of S.to_submit){                          // one row per clip: all its posts, timed from the earliest one
-      const box=el('div'),inputs={};box.style.cssText='display:flex;flex-direction:column;gap:4px;padding:6px;border-radius:8px;border:'+(g.late?'2px solid #d33':'1px solid #8884');
-      const keep=async x=>{const u=inputs[x.id].value.trim();if(u===(x.url||''))return true;const r=await jpost('/api/campaigns/post',{id:x.id,url:u});if(!r.ok){alert(await r.text());return false}x.url=u;return true};
+      const box=el('div');box.style.cssText='display:flex;flex-direction:column;gap:4px;padding:6px;border-radius:8px;border:'+(g.late?'2px solid #d33':'1px solid #8884');
+      const keep=x=>inLane(async()=>{const dr=drafts.get(x.id),p=postIn(x.id);if(!dr)return true;const u=dr.text.trim();if(!p||u===(p.url||'')){drafts.delete(x.id);return true}
+        let r;try{r=await jpost('/api/campaigns/post',{id:x.id,url:u})}catch(e){alert('Could not save the link: '+e);return false}if(!r.ok){alert(await r.text());return false}
+        p.url=u;const cur=drafts.get(x.id);if(cur){if(cur.text.trim()===u)drafts.delete(x.id);else cur.base=u}return true});     // text typed during the save stays a draft
       const hd=el('div','row');hd.append(el('b',null,String(g.title||g.clip).slice(0,60)),el('span','mut',g.campaign_name),el('span',g.late?'note bad':'mut',cpLeft(g.left_s)),el('span','grow'));
       const all=el('button','sm','Copy all links');all.title='Every link of this clip, one per line';
-      all.onclick=async()=>{for(const x of g.posts)if(!await keep(x))return;dirty=false;const urls=g.posts.map(x=>x.url).filter(Boolean);
+      all.onclick=async()=>{for(const x of g.posts)if(!await keep(x))return;const urls=g.posts.map(x=>(postIn(x.id)||x).url).filter(Boolean);
         if(!urls.length){alert('Paste the post links first (open each post in its app and copy its link).');return}
         const t=urls.join(NL);try{await navigator.clipboard.writeText(t)}catch(e){prompt('Copy these links:',t)}all.textContent='Copied '+urls.length+' ✓'};
       const op=el('button','sm','Open campaign');op.onclick=()=>window.open(safeUrl(g.campaign_url),'_blank');
       hd.append(all,op);box.append(hd);
       for(const x of g.posts){
-        const r=el('div','row'),u=el('input');u.type='text';u.placeholder='Paste the '+cpLabel(x.platform)+' link';u.value=x.url||'';u.style.cssText='flex:1;min-width:200px';inputs[x.id]=u;u.oninput=()=>{dirty=true};
+        const r=el('div','row'),u=el('input');u.type='text';u.placeholder='Paste the '+cpLabel(x.platform)+' link';const dr=drafts.get(x.id);if(dr&&dr.base!==(x.url||''))drafts.delete(x.id);     // the saved link changed: a draft of the old one is out of date
+        u.value=drafts.has(x.id)?drafts.get(x.id).text:(x.url||'');u.dataset.post=x.id;u.style.cssText='flex:1;min-width:200px';
+        u.oninput=()=>{const now=(postIn(x.id)||x).url||'';if(u.value===now)drafts.delete(x.id);else drafts.set(x.id,{text:u.value,base:now})};
         const l=el('label'),cb=el('input');cb.type='checkbox';l.append(cb,'Submitted');
-        cb.onchange=async()=>{if(!cb.checked)return;for(const y of g.posts)if(!await keep(y)){cb.checked=false;return}dirty=false;
-          const q=await jpost('/api/campaigns/post',{id:x.id,status:'submitted'});if(!q.ok){alert(await q.text());cb.checked=false;return}refresh();cpPoll()};
+        cb.onchange=async()=>{if(!cb.checked)return;for(const y of g.posts)if(!await keep(y)){cb.checked=false;return}
+          let q;try{q=await jpost('/api/campaigns/post',{id:x.id,status:'submitted'})}catch(e){alert('Could not save: '+e);cb.checked=false;return}if(!q.ok){alert(await q.text());cb.checked=false;return}refresh();cpPoll()};
         r.append(el('span',null,cpLabel(x.platform)),u,l);box.append(r)}
       sec.append(box)}
     return sec}
@@ -216,7 +225,9 @@ async function openCampaigns(){
         const vw=el('input');vw.type='number';vw.min='0';vw.placeholder='views';vw.value=x.views==null?'':x.views;vw.style.width='110px';vw.title=x.views_src==='api'?'Views from YouTube':'Views (type them in)';
         const save=async()=>{if(sel.value==='rejected'&&!why2.value.trim()){alert('Say why it was rejected: it is saved as a bad example for your style.');why2.focus();return}
           const d={id:x.id,status:sel.value,reason:why2.value};if(vw.value!==''&&+vw.value!==x.views)d.views=+vw.value;
-          const q=await jpost('/api/campaigns/post',d);if(!q.ok){alert(await q.text());return}refresh();cpPoll()};
+          const dr=drafts.get(x.id);if(dr&&sel.value!=='to_submit')d.url=dr.text.trim();     // leaving To submit: your typed link goes with it
+          const undo=()=>{sel.value=x.status;why2.style.display=x.status==='rejected'?'':'none'};     // not saved: the dropdown goes back to the truth
+          let q;try{q=await jpost('/api/campaigns/post',d)}catch(e){undo();alert('Could not save: '+e);return}if(!q.ok){undo();alert(await q.text());return}if(dr&&d.url!==undefined&&drafts.get(x.id)===dr)drafts.delete(x.id);refresh();cpPoll()};
         sel.onchange=()=>{why2.style.display=sel.value==='rejected'?'':'none';if(sel.value!=='rejected')save();else why2.focus()};why2.onchange=save;vw.onchange=save;
         const link=x.url?el('a',null,'open post'):el('span','mut','no link yet');if(x.url){link.href=safeUrl(x.url);link.target='_blank'}
         r.append(el('span',null,cpLabel(x.platform)),el('span','mut',String(x.title||x.clip).slice(0,40)),link,sel,why2,vw);pd.append(r)}
