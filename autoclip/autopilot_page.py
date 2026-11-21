@@ -63,7 +63,7 @@ async function openAutopilot(){
     const row=(label,node)=>{const r=el('div','row');r.append(el('span','mut',label),node);return r};
     const pls=el('div','row'),pb={};
     for(const [k,v] of Object.entries(S.platforms)){const l=el('label'),cb=el('input');cb.type='checkbox';cb.checked=s.platforms.includes(k);pb[k]=cb;l.append(cb,v.label);pls.append(l)}
-    sec.append(el('div','mut','Post to (needs the account connected in ⚡ Quick connect or 🔗 Accounts):'),pls);
+    sec.append(el('div','mut','Post to (needs the account connected in Setup, Connect accounts):'),pls);
     const prov=el('select');for(const p of S.providers.filter(p=>p.automatic)){const o=el('option',null,p.label+(p.configured?'':' (not set up)'));o.value=p.name;prov.append(o)}
     prov.value=s.provider;sec.append(row('Method',prov));
     const chs=el('div','row'),cb2={};

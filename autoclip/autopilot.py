@@ -82,7 +82,7 @@ def _clean(s: dict, strict: bool) -> dict:
                     raise ValueError("mode must be off, suggest or post")
             elif k == "provider":
                 if v not in PROVIDERS:
-                    raise ValueError("autopilot can only use a method that posts by itself (Quick connect / my connected accounts)")
+                    raise ValueError("autopilot can only use a method that posts by itself (connect an account in Setup, Connect accounts)")
             elif k == "platforms":
                 if not isinstance(v, list) or any(p not in share.PLATFORMS for p in v):
                     raise ValueError("unknown platform")

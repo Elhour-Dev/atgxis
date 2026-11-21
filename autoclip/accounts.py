@@ -280,7 +280,7 @@ _OAUTH_HELP = {
         "access_denied": "TikTok refused (or you pressed Cancel). Add your TikTok account as a test user in the app settings, then connect again.",
         "invalid_scope": "Enable the scopes user.info.basic and video.upload (video.publish too, only for Direct post) in the TikTok app: Login Kit and Content Posting API products.",
         "scope_not_authorized": "Enable the scopes user.info.basic and video.upload (video.publish too, only for Direct post) in the TikTok app: Login Kit and Content Posting API products.",
-        "redirect_uri": "The redirect address in the TikTok app does not match this page's address. Copy it again from the Accounts window.",
+        "redirect_uri": "The redirect address in the TikTok app does not match this page's address. Copy it again from Setup, Connect accounts.",
         "invalid_client": "TikTok does not recognise the client key/secret. Copy them again from the app page.",
     },
 }

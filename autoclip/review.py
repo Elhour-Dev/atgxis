@@ -131,8 +131,8 @@ details input[type=text],details input[type=password],details textarea{width:100
 @media(max-width:600px){main{padding:10px}header.top{position:static;padding:8px 10px}.keys{display:none}h1{font-size:17px}.tab{padding:5px 8px;font-size:14px}.card{padding:12px}}
 </style>
 <header class=top><div class=bar><h1>Clip review</h1><nav class=tabs id=tabs></nav><span class=grow></span>
-<button id=upd class="sm good" hidden></button><div class=menu><button id=layoutBtn title="How 9:16 clips are built: where the webcam and the game go, per streamer">📐 Layout</button><div class=menu-list id=layoutList hidden></div></div><div class=menu><button id=setupBtn title="Folders and posting accounts">⚙ Setup ▾</button><div class=menu-list id=setupList hidden>
-<button id=quick title="Post to Instagram + TikTok with one free key">⚡ Quick connect (Instagram + TikTok)</button><button id=accts title="YouTube and advanced: your own developer apps">🔗 Accounts (YouTube, advanced)</button><button id=folders>📁 Folders</button></div></div>
+<button id=upd class="sm good" hidden></button><div class=menu><button id=setupBtn title="Accounts, video layout and folders">⚙ Setup ▾</button><div class=menu-list id=setupList hidden>
+<button id=connect title="Set up automatic posting">🔗 Connect accounts</button><button id=layoutBtn title="Where the webcam and the game go in vertical clips, per streamer">📐 Video layout</button><button id=folders>📁 Folders</button></div></div>
 <button id=cpBtn title="Paid clipping campaigns">💰 Campaigns <span class=n id=cpN hidden></span></button><button id=ap class=primary title="Learns which clips you keep and can post the good ones for you">🤖 Autopilot</button></div>
 <div class=sub><select id=s title="Order"><option value=score>Best score first</option><option value=created>Newest first</option><option value=ap>Autopilot pick first</option></select><span class=mut id=count></span><span class=grow></span><span class=keys>Keys: <kbd>K</kbd> keep <kbd>T</kbd> trash <kbd>U</kbd> undo <kbd>←</kbd><kbd>→</kbd> next clip <kbd>Space</kbd> play</span><button id=purge class="danger sm" hidden>Delete trashed files</button></div></header>
 <main><div class=grid id=g></div></main>
@@ -165,7 +165,7 @@ function paintEx(id){
   if(!busy&&j&&j.state==='error'){u.note.style.display='';u.note.append('Export failed: '+j.message+' ');
     const d=el('button',null,'Dismiss');d.onclick=async()=>{await post('/api/export/dismiss',{id});await load(false)};u.note.append(d)}}
 function numInput(v,on){const i=el('input');i.type='number';i.step='0.1';i.min='0';i.value=v;i.oninput=()=>on(parseFloat(i.value));return i}
-const LABEL={new:'To review',keep:'Kept',trash:'Trash',done:'Done',all:'All'};let filter='new',cur=null;
+const LABEL={new:'To review',keep:'Kept',trash:'Trash',done:'Archived',all:'All'};let filter='new',cur=null;
 function ago(iso){const s=(Date.now()-new Date(iso).getTime())/1000;if(!(s>=0))return String(iso).replace('T',' ');if(s<90)return 'just now';
   if(s<3600)return Math.round(s/60)+' min ago';if(s<86400)return Math.round(s/3600)+' h ago';return Math.round(s/86400)+' d ago'}
 function paintTabs(){const tabs=document.getElementById('tabs'),n={all:clips.length};for(const c of clips)n[c.status]=(n[c.status]||0)+1;tabs.replaceChildren();
@@ -175,7 +175,7 @@ function paintTabs(){const tabs=document.getElementById('tabs'),n={all:clips.len
 function head(c){const h=el('div','head'),sc=el('div','score',String(Math.round(c.score)));sc.title='Clip score: how much bigger the chat reaction was than normal';
   const tx=el('div','htx'),t2=el('div','mut',c.channel+' · '+ago(c.created)+(c.duration_s&&c.status!=='done'?' · '+fmt(c.duration_s)+' draft':''));t2.title=String(c.created).replace('T',' ');
   tx.append(el('div','htitle',(c.description||{}).title||c.channel),t2);h.append(sc,tx);
-  if(c.status!=='new')h.append(el('span','pill '+c.status,{keep:'Kept',trash:'Trashed',done:'Posted · files freed'}[c.status]||c.status));return h}
+  if(c.status!=='new')h.append(el('span','pill '+c.status,{keep:'Kept',trash:'Trashed',done:'Archived · files freed'}[c.status]||c.status));return h}
 function stage(c,key,num,title,state,ok,body,locked){
   const d=el('details','stage'+(ok?' ok':'')+(locked?' locked':''));d.open=!locked&&!!openSt.get(c.id+key);d.ontoggle=()=>openSt.set(c.id+key,d.open);
   const s=el('summary'),stx=el('span','st',state);s.append(el('span','num',ok?'✓':num),el('b',null,title),stx);d.append(s);
@@ -233,14 +233,14 @@ function render(){
     const right=el('button','sm','5 s ▶');right.title='Slide the whole clip 5 s later';right.onclick=()=>shift(5);
     const snap=el('button','sm','30 s');snap.title='Make the clip exactly 30 s from the start point';snap.onclick=()=>{t.end=+Math.min(t.start+(c.clip_len_s||30),c.duration_s).toFixed(1);sync()};
     const tr1=el('div','row');tr1.append(el('span','lbl','Clip'),lab,el('span','grow'),setA,setB);
-    const ft=el('details','fine');ft.open=!!openSt.get(c.id+'ft');ft.ontoggle=()=>openSt.set(c.id+'ft',ft.open);ft.append(el('summary',null,'Fine-tune'));const fr=el('div','row');fr.append(left,right,el('span','mut','Start'),a,el('span','mut','End'),b,snap);ft.append(fr);
+    const ft=el('details','fine');ft.open=!!openSt.get(c.id+'ft');ft.ontoggle=()=>openSt.set(c.id+'ft',ft.open);ft.append(el('summary',null,'More trim options'));const fr=el('div','row');fr.append(left,right,el('span','mut','Start'),a,el('span','mut','End'),b,snap);ft.append(fr);
     tb.append(track,tr1,ft);sync();card.append(tb);
     // ---- what happened in chat
-    const sp=c.spike||{},info=el('div','info');
+    const sp=c.spike||{},info=el('details','fine');info.open=!!openSt.get(c.id+'why');info.ontoggle=()=>openSt.set(c.id+'why',info.open);info.append(el('summary',null,'Why this clip'));
     info.append(el('div','mut',sp.peak+' chatters at once (normal '+Math.round(sp.baseline)+') · '+sp.msgs+' msgs'+(c.loudness_jump_db!=null?' · audio '+(c.loudness_jump_db>0?'+':'')+c.loudness_jump_db+' dB':'')+(c.res?' · '+c.res[1]+'p':'')));
     if(sp.top&&sp.top.length){const tg=el('div','tags');for(const x of sp.top.slice(0,8))tg.append(el('span','tag',x[0]+' ×'+x[1]));info.append(tg)}
-    if(c.res&&c.res[1]<1000)info.append(el('div','note warn','⚠ Recorded at '+c.res[1]+'p, so it cannot look sharp when enlarged to 1080x1920. Clips recorded after the update use the best quality the stream offers.'));
     card.append(info);
+    if(c.res&&c.res[1]<1000)card.append(el('div','note warn','⚠ Recorded at '+c.res[1]+'p, so it cannot look sharp when enlarged to 1080x1920. Clips recorded after the update use the best quality the stream offers.'));
     // ---- the decision: always the same place, big
     const dec=el('div','decide');
     const big=(label,st,cls,key)=>{const x=el('button','big '+cls);x.append(label,el('kbd',null,key));x.title=label+' (key '+key+')';x.onclick=()=>setStatus(c,st);return x};
@@ -248,8 +248,8 @@ function render(){
     if(c.status!=='trash')dec.append(big('Trash','trash','bad','T'));
     if(c.status!=='new')dec.append(big('Undo','new','','U'));
     if(Object.values(c.shares||{}).some(x=>['done','draft','opened'].includes(x.status))){
-      const dn=el('button','big','Done (free space)');dn.title='Posted already: delete this clip'+String.fromCharCode(39)+'s video files here to free disk space. Counts as a Keep for learning. Copies in your final clips folder are not touched.';
-      dn.onclick=async()=>{if(!confirm('Delete the draft and export videos of this clip to free space?'+NL+NL+'It stays listed under Done (posted, files freed) and counts as a Keep. Copies in your final clips folder are kept.'))return;
+      const dn=el('button','big','Archive (free space)');dn.title='Posted already: delete this clip'+String.fromCharCode(39)+'s video files here to free disk space. Counts as a Keep for learning. Copies in your final clips folder are not touched.';
+      dn.onclick=async()=>{if(!confirm('Delete the draft and export videos of this clip to free space?'+NL+NL+'It stays listed under Archived and counts as a Keep. Copies in your final clips folder are kept.'))return;
         await post('/api/status',{id:c.id,status:'done'});load(true)};dec.append(dn)}
     const src=el('a','chan','Open channel ↗');src.href=c.source_url;src.target='_blank';dec.append(src);
     card.append(dec);
@@ -260,7 +260,7 @@ function render(){
     const ex=el('button','primary','Export clip'),exNote=el('div','note bad');exNote.style.display='none';
     ex.onclick=async()=>{exPending.add(c.id);paintEx(c.id);const ok=await post('/api/export/start',{id:c.id,start:t.start,end:t.end,vertical:t.vertical,captions:t.captions,hook:t.hookOff?'':(t.hook||'auto'),hook_style:t.hookStyle||'',hook_src:t.hookSrc||'',voiceover:!!(t.vo&&c.voiceover)});
       exPending.delete(c.id);await load(false)};          // the server now owns the state: it flips back only when the file is really made
-    r2.append(el('span','grow'),ex);b1.append(el('div','hint','Uses the clip range above. One encode: trim, 9:16 layout and captions together.'),r2,exNote,cpExportExtras(c,t),rfBox(c,t));
+    r2.append(el('span','grow'),ex);b1.append(r2,exNote,cpExportExtras(c,t),rfBox(c,t));
     if(nx){const e=el('div','row');e.append(el('span','mut','Files:'));for(const x of c.exports){const l=el('a','file',(x.vertical?'9:16 ':'')+(x.captions?'CC ':'')+fmt(x.start)+'-'+fmt(x.end));l.href=fileUrl(c,x.file);l.target='_blank';
       const sf=el('button','sm','📂');sf.title='Show this file in its folder'+(x.copy?' (a copy is also in your final clips folder)':'');sf.onclick=()=>post('/api/reveal',{id:c.id,file:x.file});e.append(l,sf)}b1.append(e)}
     const lb=el('button','sm',layouts[c.channel]?'Edit 9:16 layout for '+c.channel+' ✓':'Set 9:16 layout for '+c.channel+' (webcam + gameplay)');lb.onclick=()=>openLayout(c,v);b1.append(lb);
@@ -282,13 +282,12 @@ function render(){
         const nd=await r.json();alts=nd.alts||[];ai=0;if(alts.length)ti.value=alts[0];
         if(nd.body&&ta.value===(d.auto_body||d.body)){ta.value=nd.body}                 // only replace the description if you have not edited it
         d.auto_body=nd.auto_body;d.body=ta.value;hint.textContent=nd.note||(nd.used_speech?'Titles use what the streamer said.':'Titles use the chat reaction.');save();return true};
-      const other=el('button','sm','↻ Other title');other.onclick=async()=>{other.disabled=true;
+      const other=el('button','sm','↻ New title');other.title='Next suggestion; makes a new set when they run out';other.onclick=async()=>{other.disabled=true;
         if(alts.length>1&&ai+1<alts.length){ai++;ti.value=alts[ai];save()}else{await fetchNew(false)}other.disabled=false};
-      const more=el('button','sm','🔄 New ideas');more.title='Make a completely new set of titles for this clip';more.onclick=async()=>{more.disabled=true;await fetchNew(false);more.disabled=false};
-      const say=el('button','sm','🎧 From what is said');say.title='Listen to this clip (needs captions set up) and quote the words the streamer said in the titles';say.onclick=async()=>{say.disabled=true;await fetchNew(true);say.disabled=false};
+      const say=el('button','sm','🎧 Use the streamer'+String.fromCharCode(39)+'s words');say.title='Listen to this clip (needs captions set up) and quote the words the streamer said in the titles';say.onclick=async()=>{say.disabled=true;await fetchNew(true);say.disabled=false};
       const cp=el('button','sm','Copy title + description');cp.onclick=async()=>{const t=ti.value+NL+NL+ta.value;
         try{await navigator.clipboard.writeText(t)}catch(e){ta.select();document.execCommand('copy')}cp.textContent='Copied ✓';setTimeout(()=>cp.textContent='Copy title + description',1500)};
-      const dr=el('div','row');dr.append(other,more,say,cp);det.append(el('div','lbl','Title'),ti,el('div','lbl','Description'),ta,dr,hint);
+      const dr=el('div','row');dr.append(other,say,cp);det.append(el('div','lbl','Title'),ti,el('div','lbl','Description'),ta,dr,hint);
       const mine=['picked','typed'].includes(d.title_src)||d.body_edited;
       card.append(stage(c,'tx','2','Post text',mine?'edited by you':'suggested'+(d.category?' · '+d.category:''),mine,det,false))}
     // ---- step 3: share
@@ -316,7 +315,7 @@ function render(){
         let warnIg='';const ck=await fetch('/api/share/check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:c.id,file:fsel.value,platforms:chosen})});
         if(ck.ok){const k=await ck.json();if(k.block){alert('Instagram Reels '+k.block+'.'+NL+NL+'Untick Instagram to post to the others now.');return}
           if(k.same_moment.length)warnIg=NL+NL+'⚠ This moment was already posted:'+NL+k.same_moment.join(NL)+NL+'Instagram may show a repeat to fewer people.'}
-        if(!confirm('Share this clip?'+NL+NL+'File: '+fsel.value+NL+'Title: '+tx.title+NL+'To: '+names+NL+'Method: '+prov.label+NL+NL+(prov.automatic?'It is uploaded to your connected account(s) the moment you press OK.':'Nothing is posted or opened until you press OK.')+warnIg))return;
+        if(!confirm('Share this clip?'+NL+NL+'File: '+fsel.value+NL+'Title: '+tx.title+NL+'To: '+names+NL+'How: '+prov.label+NL+NL+(prov.automatic?'It is uploaded to your connected account(s) the moment you press OK.':'Nothing is posted or opened until you press OK.')+warnIg))return;
         go.disabled=true;go.textContent='Working…';
         const send=async plats=>{const r=await fetch('/api/share',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:c.id,file:fsel.value,platforms:plats,texts,provider:psel.value,force:force.checked})});
           if(!r.ok){alert(await r.text());return null}return (await r.json()).results};
@@ -327,8 +326,8 @@ function render(){
         go.disabled=false;go.textContent='Share selected…';load(true)};
       const cn=el('div','row');const paintCn=()=>{cn.replaceChildren();const auto=psel.value==='auto';if(!(auto||psel.value==='direct')||!shareInfo.connected)return;const need=Object.keys(shareInfo.platforms).filter(k=>!shareInfo.connected[k]&&!(auto&&(shareInfo.quick||{})[k]));if(!need.length)return;
         cn.append(el('span','mut','Not connected yet:'));for(const k of need){const b=el('button','sm','Connect '+shareInfo.platforms[k].label);b.onclick=()=>auto&&k!=='youtube'?openQuick():openAccounts(k);cn.append(b)}};psel.addEventListener('change',paintCn);paintCn();
-      const g2=el('div','form2');g2.append(el('span','lbl','File'),fsel,el('span','lbl','Method'),psel);
-      const gr=el('div','row');gr.append(fl,el('span','grow'),go);
+      const g2=el('div','form2');if(exs.length>1)g2.append(el('span','lbl','File'),fsel);g2.append(el('span','lbl','How to post'),psel);
+      const gr=el('div','row');if(Object.keys(c.shares||{}).length)gr.append(fl);gr.append(el('span','grow'),go);
       sd.append(g2,cn,row,gr,st);
       card.append(stage(c,'sh','3','Share',posted.length?'posted: '+posted.join(', '):'not shared yet',posted.length>0,sd,false))}
     else card.append(stage(c,'sh','3','Share','export the clip first',false,null,true));
@@ -371,7 +370,7 @@ async function openAccounts(focus){
   let S=await (await fetch('/api/accounts')).json();
   const notes={};                                   // platform -> {text, kind, href}: survives a redraw of the cards
   const ov=el('div','modal'),box=el('div','mbox');ov.append(box);box.append(el('h2',null,'Connect your accounts'));
-  box.append(el('div','hint','Advanced. For Instagram + TikTok the ⚡ Quick connect button is simpler; use this window for YouTube or if you prefer your own developer apps. Optional: only needed for automatic posting. The Share assistant works without any of this. Every platform makes you create a free developer app on your own account (that cannot be skipped); each step below opens the exact page and tells you what to press. Your logins stay on this PC (accounts.json in the autoclip settings folder), are never shown again and are only ever sent to the platform itself.'));
+  box.append(el('div','hint','For YouTube, or if you prefer your own developer apps. Instagram + TikTok are easier through Setup, Connect accounts. Only needed for automatic posting. Every platform makes you create a free developer app on your own account (that cannot be skipped); each step below opens the exact page and tells you what to press. Your logins stay on this PC (accounts.json in the autoclip settings folder), are never shown again and are only ever sent to the platform itself.'));
   const list=el('div');list.style.cssText='display:flex;flex-direction:column;gap:10px';box.append(list);
   const refresh=async()=>{S=await (await fetch('/api/accounts')).json();await loadShare()};
   const card=pl=>{
@@ -443,9 +442,16 @@ async function openAccounts(focus){
   const build=()=>{list.replaceChildren(...Object.keys(S.platforms).map(card))};
   const cl=el('button',null,'Close');cl.onclick=()=>{ov.remove();sig='';load(true)};box.append(cl);build();document.body.append(ov);
   if(focus){const t=list.querySelector('[data-pl="'+focus+'"]');if(t)t.scrollIntoView()}}
+function openConnect(){
+  const ov=el('div','modal'),box=el('div','mbox');ov.append(box);box.append(el('h2',null,'Connect accounts'),el('div','hint','Only needed for automatic posting. You can always share a clip by hand without connecting anything.'));
+  for(const [k,v] of Object.entries(shareInfo.platforms||{})){const ok=(shareInfo.connected||{})[k]||(shareInfo.quick||{})[k],r=el('div','row');r.append(el('b',null,v.label),el('span','chip'+(ok?' ok':''),ok?'✅ Connected':'Not connected'));box.append(r)}
+  const go=(label,cls,fn)=>{const b=el('button',cls,label);b.onclick=()=>{ov.remove();fn()};return b};
+  const row=el('div','row');row.append(go('Instagram + TikTok (easiest)','primary',openQuick),go('YouTube',null,()=>openAccounts('youtube')));
+  const adv=el('details');adv.append(el('summary',null,'Use my own developer apps'),go('Open advanced setup','sm',()=>openAccounts()));
+  const cl=el('button',null,'Close');cl.onclick=()=>ov.remove();box.append(row,adv,cl);document.body.append(ov)}
 function openQuick(){
-  const ov=el('div','modal'),box=el('div','mbox');ov.append(box);box.append(el('h2',null,'⚡ Quick connect: Instagram + TikTok'));
-  box.append(el('div','hint','One free Zernio account posts to Instagram and TikTok for you: no developer apps, no approval waiting. Its free plan covers your first 2 connected accounts with unlimited posts, so connect only these two there. YouTube stays in 🔗 Accounts. Your key is kept on this PC and only ever sent to Zernio.'));
+  const ov=el('div','modal'),box=el('div','mbox');ov.append(box);box.append(el('h2',null,'Connect Instagram + TikTok'));
+  box.append(el('div','hint','One free Zernio account posts to Instagram and TikTok for you: no developer apps, no approval waiting. Its free plan covers your first 2 connected accounts with unlimited posts, so connect only these two there. YouTube is set up separately under Connect accounts. Your key is kept on this PC and only ever sent to Zernio.'));
   const steps=[['Create a free Zernio account (no card needed).',{label:'Open Zernio',url:'https://zernio.com'}],
     ['In Zernio, connect your Instagram (a professional/business account) and your TikTok account. Do not connect more than these two, to stay on the free plan.',{label:'Open Zernio',url:'https://zernio.com'}],
     ['In Zernio, create an API key (in the dashboard) and copy it.',null]];
@@ -570,16 +576,18 @@ function openLayout(c,video){
 document.getElementById('s').onchange=()=>{shown=30;render()};
 document.getElementById('upd').onclick=()=>{sig='';lastAct=0;load(true)};
 {const hd=document.querySelector('header.top');let on=false;window.addEventListener('scroll',()=>{const want=on?scrollY>40:scrollY>90;if(want!==on){on=want;hd.classList.toggle('compact',on)}},{passive:true})}
-{const lb=document.getElementById('layoutBtn'),ll=document.getElementById('layoutList');
+{const lb=document.getElementById('layoutBtn');
   const best=ch=>clips.filter(c=>c.channel===ch&&c.status!=='done'&&c.file).sort((a,b)=>b.created.localeCompare(a.created))[0];
   const open=ch=>{const c=best(ch);if(c)openLayout(c,{currentTime:c.moment_s||0})};
-  lb.onclick=e=>{e.stopPropagation();const chs=[...new Set(clips.filter(c=>c.status!=='done'&&c.file).map(c=>c.channel))].sort();
+  lb.onclick=()=>{const chs=[...new Set(clips.filter(c=>c.status!=='done'&&c.file).map(c=>c.channel))].sort();
     if(!chs.length){alert('No clips yet: the layout is set on a clip of that streamer.');return}
     if(chs.length===1){open(chs[0]);return}
-    ll.replaceChildren(...chs.map(ch=>{const b=el('button',null,(layouts[ch]?'✓ ':'')+ch);b.onclick=()=>open(ch);return b}));ll.hidden=!ll.hidden};
-  document.addEventListener('click',e=>{if(!lb.contains(e.target))ll.hidden=true})}{const sb=document.getElementById('setupBtn'),sl=document.getElementById('setupList');sb.onclick=e=>{e.stopPropagation();sl.hidden=!sl.hidden};sl.onclick=()=>{sl.hidden=true};document.addEventListener('click',e=>{if(!sb.contains(e.target))sl.hidden=true})}
+    const ov=el('div','modal'),box=el('div','mbox'),row=el('div','row');ov.append(box);box.append(el('h2',null,'Video layout: which streamer?'),row);
+    for(const ch of chs){const b=el('button',null,(layouts[ch]?'✓ ':'')+ch);b.onclick=()=>{ov.remove();open(ch)};row.append(b)}
+    const cl=el('button',null,'Close');cl.onclick=()=>ov.remove();box.append(cl);document.body.append(ov)}}
+{const sb=document.getElementById('setupBtn'),sl=document.getElementById('setupList');sb.onclick=e=>{e.stopPropagation();sl.hidden=!sl.hidden};sl.onclick=()=>{sl.hidden=true};document.addEventListener('click',e=>{if(!sb.contains(e.target))sl.hidden=true})}
 document.getElementById('purge').onclick=async()=>{if(confirm('Permanently delete every trashed clip file?')){await post('/api/purge',{});load(true)}};
-document.getElementById('folders').onclick=openFolders;document.getElementById('accts').onclick=openAccounts;document.getElementById('quick').onclick=openQuick;Promise.all([loadLayouts(),loadShare()]).then(()=>{load(true);if(!(shareInfo.providers||[]).some(p=>p.automatic&&p.configured)){const sb=document.getElementById('setupBtn');sb.classList.add('dot');sb.title='No account connected for posting yet: open Quick connect or Accounts'}const m=location.hash.match(/connect=([a-z]*)/);if(m)openAccounts(m[1])});(function tick(){setTimeout(async()=>{try{await load(false)}catch(e){}tick()},clips.some(exBusy)?1500:10000)})();
+document.getElementById('folders').onclick=openFolders;document.getElementById('connect').onclick=openConnect;Promise.all([loadLayouts(),loadShare()]).then(()=>{load(true);if(!(shareInfo.providers||[]).some(p=>p.automatic&&p.configured)){const sb=document.getElementById('setupBtn');sb.classList.add('dot');sb.title='No account connected for posting yet: open Connect accounts'}const m=location.hash.match(/connect=([a-z]*)/);if(m)m[1]?openAccounts(m[1]):openConnect()});(function tick(){setTimeout(async()=>{try{await load(false)}catch(e){}tick()},clips.some(exBusy)?1500:10000)})();
 </script>"""
 
 PAGE = PAGE.replace("/*__AP__*/", autopilot_page.JS).replace("/*__CP__*/", campaigns_page.JS).replace("/*__RF__*/", reframe_page.JS)
@@ -1140,7 +1148,16 @@ def make_handler(store: Store):
             self.end_headers()
             self.wfile.write(body)
 
+        def _from_this_page(self) -> bool:
+            """Only this page may talk to the server: blocks DNS rebinding (Host) and other sites or local ports (Origin)."""
+            port = self.server.server_address[1]
+            own = {f"{h}:{port}" if port != 80 else h for h in ("127.0.0.1", "localhost")}     # browsers drop ":80"
+            origin = self.headers.get("Origin")
+            return (self.headers.get("Host") or "").lower() in own and (not origin or origin.lower() in {f"http://{h}" for h in own})
+
         def do_GET(self):
+            if not self._from_this_page():
+                return self._send(403, b"forbidden", "text/plain")
             path = unquote(urlparse(self.path).path)
             if path == "/":
                 return self._send(200, PAGE.encode(), "text/html; charset=utf-8")
@@ -1244,11 +1261,16 @@ def make_handler(store: Store):
                 pass
 
         def do_POST(self):
-            if self.headers.get("Origin") and urlparse(self.headers["Origin"]).hostname not in ("127.0.0.1", "localhost"):
+            if not self._from_this_page():
                 return self._send(403, b"forbidden", "text/plain")     # block other websites from poking the API
             try:
-                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
-            except ValueError:
+                size = int(self.headers.get("Content-Length", 0))
+                if size < 0:                                           # read(-1) would wait forever
+                    raise ValueError
+                body = json.loads(self.rfile.read(size) or b"{}")
+                if not isinstance(body, dict):
+                    raise ValueError
+            except (ValueError, OverflowError, RecursionError):
                 return self._send(400, b"bad json", "text/plain")
             path = urlparse(self.path).path
             ok = False

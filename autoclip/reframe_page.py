@@ -5,7 +5,7 @@ JS = r"""
 function rpost(u,d){return fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)})}
 function rfBox(c,t){
   const box=el('details','fine');box.open=!!openSt.get(c.id+'rf');
-  box.append(el('summary',null,'Reframe & quality: zooms, layout steps, before / after'));
+  box.append(el('summary',null,'Zoom and preview'));
   const info=el('div','hint'),imgs=el('div','row'),warn=el('div');
   const bef=el('img'),aft=el('img');for(const i of [bef,aft]){i.style.cssText='max-height:320px;max-width:48%;border-radius:8px;background:#0003'}
   bef.alt='Before: the stream frame';aft.alt='After: the 9:16 export frame';
@@ -28,15 +28,15 @@ function rfBox(c,t){
   const save=async(patch)=>{const r=await rpost('/api/reframe',Object.assign({id:c.id},patch));if(!r.ok){alert(await r.text());return}
     Object.assign(o,await r.json());c.reframe=Object.assign({},o);paintSw();if(info.textContent)show()};
   function paintSw(){sw.replaceChildren();
-    for(const [k,l,tip] of [['on','Reframe','Zooms, layout steps and a gameplay crop that follows the action, made from the stream sound and picture'],
+    for(const [k,l,tip] of [['on','Auto zoom and framing','Zooms, layout steps and a gameplay crop that follows the action, made from the stream sound and picture'],
       ['zoom','Zooms','Punch-in on loud / reaction peaks, slow push-in on build-ups. At most 2 per 30 s'],
-      ['layouts','Webcam only → split → webcam only','Split layouts: the webcam alone (over a blurred stream) for the hook and the reaction at the end, split for the action'],
+      ['layouts','Webcam for intro and ending','Split layouts: the webcam alone (over a blurred stream) for the hook and the reaction at the end, split for the action'],
       ['track','Follow gameplay','The gameplay crop moves to where the action is'],
       ['freeze','Freeze on peak','Holds the peak frame for half a second (sound keeps going)']]){
       const lb=el('label'),cb=el('input');cb.type='checkbox';cb.checked=!!o[k];cb.disabled=k!=='on'&&!o.on;lb.title=tip;
       cb.onchange=()=>save({[k]:cb.checked});lb.append(cb,l);sw.append(lb)}
     const sh=el('button','sm','🎲 Shuffle');sh.title='New random choices for this clip (zoom sizes, timings, layout steps)';sh.disabled=!o.on;sh.onclick=()=>save({shuffle:true});sw.append(sh)}
   paintSw();
-  box.append(sw,go,info,warn,imgs,el('div','hint','One pass from the original recording: lanczos scaling, a light sharpen only while zoomed, CRF 18 or better. A zoom never enlarges the stream more than 1.5x.'));
+  box.append(sw,go,info,warn,imgs,el('div','hint','Made in one pass from the original recording, so quality stays high. A zoom never enlarges the stream more than 1.5x.'));
   return box}
 """

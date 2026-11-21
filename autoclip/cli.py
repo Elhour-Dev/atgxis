@@ -112,7 +112,7 @@ def cmd_check(args) -> int:
     took = max(time.time() - t0, 0.5)
     msgs = "\n".join(lines)
     first_s = (first[0] - t0) if first[0] else None
-    print(f"\nstreamlink said:\n" + ("\n".join("  " + ln for ln in lines[-(40 if args.debug else 12):]) if lines else "  (nothing)"))
+    print("\nstreamlink said:\n" + ("\n".join("  " + ln for ln in lines[-(40 if args.debug else 12):]) if lines else "  (nothing)"))
     print(f"\nreceived {got[0] / 1e6:.2f} MB in {took:.0f} s" + (f", first video after {first_s:.0f} s" if first_s is not None else "") + "\n")
     verdict = diagnose_stream(msgs, got[0], took, first_s)
     print("\n".join(verdict))
@@ -357,7 +357,7 @@ def cmd_connect(args) -> int:
     """Open the review page straight on the Accounts window (guided setup for automatic posting)."""
     from .review import serve
     cfg = _load_cfg(args)
-    print("Opening the Accounts window" + (f" for {args.platform}" if args.platform else "") +
+    print("Opening Connect accounts" +(f" for {args.platform}" if args.platform else "") +
           ". Follow the numbered steps there; press Ctrl+C here when you are done.")
     serve(Path(cfg.out_dir), cfg, args.port, not args.no_browser, open_path="#connect=" + (args.platform or ""))
     return 0

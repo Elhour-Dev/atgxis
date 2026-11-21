@@ -50,6 +50,8 @@ check its result yourself.)
 | `audio.py` | Loudness of each segment (a second "something happened" signal) |
 | `cutter.py` | Draft cuts (stream copy, no re-encode) and the one-pass export (trim + layout + captions) |
 | `layout.py`, `facecam.py` | 9:16 layouts stored as fractions of the frame; optional webcam auto-detect (OpenCV) |
+| `reframe.py`, `reframe_page.py`, `quality.py` | Automatic zooms and layout steps, their card controls, and quality checks |
+| `hooks.py` | Opening hook text on exported clips |
 | `captions.py`, `describe.py` | Burned-in captions; title / description suggestions |
 | `review.py`, `autopilot_page.py` | The local review web page (one big Python string, so no backslashes in `review.PAGE`) |
 | `share.py`, `publish.py`, `accounts.py`, `zernio.py` | Sharing and posting: share assistant, official APIs, OAuth logins, Zernio "Quick connect" |

@@ -9,10 +9,8 @@ message (for example: YouTube keeps uploads from brand-new API projects private 
 """
 from __future__ import annotations
 
-import math
 import time
 import urllib.parse
-from pathlib import Path
 
 from . import accounts as acc
 from .accounts import ApiError, api_message, as_json, http
@@ -195,7 +193,7 @@ class DirectProvider(Provider):
 
     def problems(self, platform: str) -> str | None:
         if not acc.connected(platform):
-            return f"{PLATFORMS[platform]['label']} is not connected (open 🔗 Accounts at the top of the page)"
+            return f"{PLATFORMS[platform]['label']} is not connected (open Setup, Connect accounts at the top of the page)"
         return None
 
     def publish(self, job: Job) -> Result:
