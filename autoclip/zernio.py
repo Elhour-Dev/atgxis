@@ -178,7 +178,7 @@ def zernio_upload(job: Job) -> Result:
 
 class AutoProvider(Provider):
     """Per platform: Zernio if the platform is connected there, otherwise the direct account (YouTube, normally)."""
-    name, label, automatic = "auto", "Post automatically (Quick connect + my own accounts)", True
+    name, label, automatic = "auto", "Post automatically (easiest)", True
 
     def configured(self) -> bool:
         return any(covers(p) or acc.connected(p) for p in PLATFORMS)
@@ -186,8 +186,7 @@ class AutoProvider(Provider):
     def problems(self, platform: str) -> str | None:
         if covers(platform) or acc.connected(platform):
             return None
-        how = "⚡ Quick connect" if platform != "youtube" else "🔗 Accounts"
-        return f"{PLATFORMS[platform]['label']} is not connected (open {how} at the top of the page)"
+        return f"{PLATFORMS[platform]['label']} is not connected (open Setup, Connect accounts at the top of the page)"
 
     def publish(self, job: Job) -> Result:
         try:

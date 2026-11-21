@@ -28,20 +28,19 @@ function apBadge(c){
 async function openAutopilot(){
   const ov=el('div','modal'),box=el('div','mbox');ov.append(box);
   box.append(el('h2',null,'🤖 Autopilot'));
-  box.append(el('div','hint','It watches which clips you Keep and which you Trash, learns what you like, and can then post the clips it is sure about on its own. It starts OFF. Nothing is ever posted until it has proved itself on clips it did not learn from, and you switch it to "Post automatically" yourself.'));
+  box.append(el('div','hint','Learns from your Keep and Trash, then can post the clips it is sure about. It starts off, and posts nothing until it has proved itself and you turn it on.'));
   const body=el('div');body.style.cssText='display:flex;flex-direction:column;gap:12px';box.append(body);
   const close=el('button',null,'Close');close.onclick=()=>{ov.remove();sig='';load(true)};box.append(close);
   document.body.append(ov);
   let S=null,flash=null;                      // flash: a message that must survive the redraw that follows a save
-  const pct=x=>Math.round(x*100)+'%';
+  const folds={},pct=x=>Math.round(x*100)+'%';   // folds: which sections you opened, kept across redraws
+  const fold=(key,title,x,open)=>{const d=el('details','acc');d.open=key in folds?folds[key]:!!open;d.ontoggle=()=>{folds[key]=d.open};
+    x.classList.remove('acc');x.style.cssText='display:flex;flex-direction:column;gap:6px;margin-top:6px';d.append(el('summary',null,title),x);return d};
   async function refresh(){S=await (await fetch('/api/autopilot')).json();paint()}
 
   function learned(){
     const sec=el('div','acc'),n=S.counts,r=S.ready;
-    sec.append(el('b',null,'What it has learned from you'));
     sec.append(el('div',null,n.total+' decisions so far: '+n.keeps+' kept, '+n.trashes+' trashed. Every Keep and Trash you press teaches it (and deleting trashed files does not make it forget).'));
-    const chip=el('div','chip'+(r.ok?' ok':''),r.ok?'✅ Ready: it may post clips it is at least '+pct(r.threshold)+' sure about':'⏳ '+r.reason);
-    chip.style.alignSelf='flex-start';chip.style.whiteSpace='normal';sec.append(chip);
     if(S.model&&S.model.auc!=null)sec.append(el('div','hint','Tested on clips it had not seen while learning: it puts a clip you kept above one you trashed '+pct(S.model.auc)+' of the time (50% would be guessing).'));
     if(r.ok)sec.append(el('div','hint','At that level, on your past clips it would have picked '+r.support+' and you would have kept '+r.hits+' of them ('+pct(r.precision)+'). The honest worst case, after allowing for luck, is about '+pct(r.lower)+'.'));
     const cv=(S.curve||[]).filter(x=>x.picked>0);
@@ -57,32 +56,37 @@ async function openAutopilot(){
   function controls(){
     const sec=el('div','acc'),s=S.settings;sec.append(el('b',null,'What it may do'));
     if(s.paused_reason){const w=el('div','note bad');w.textContent='⏸ Paused: '+s.paused_reason;sec.append(w)}
+    const rd=S.ready,chip=el('div','chip'+(rd.ok?' ok':''),rd.ok?'✅ Ready: it may post clips it is at least '+pct(rd.threshold)+' sure about':'⏳ '+rd.reason);
+    chip.style.alignSelf='flex-start';chip.style.whiteSpace='normal';sec.append(chip);
     const mode=el('select');
     for(const [v,t] of [['off','Off: only learn from my Keep / Trash'],['suggest','Suggest only: mark the clips it would post, post nothing'],['post','Post automatically (only clips it is sure about)']]){const o=el('option',null,t);o.value=v;mode.append(o)}
     mode.value=s.mode;sec.append(mode);
     const row=(label,node)=>{const r=el('div','row');r.append(el('span','mut',label),node);return r};
     const pls=el('div','row'),pb={};
     for(const [k,v] of Object.entries(S.platforms)){const l=el('label'),cb=el('input');cb.type='checkbox';cb.checked=s.platforms.includes(k);pb[k]=cb;l.append(cb,v.label);pls.append(l)}
-    sec.append(el('div','mut','Post to (needs the account connected in ⚡ Quick connect or 🔗 Accounts):'),pls);
+    sec.append(el('div','mut','Post to (needs the account connected in Setup, Connect accounts):'),pls);
     const prov=el('select');for(const p of S.providers.filter(p=>p.automatic)){const o=el('option',null,p.label+(p.configured?'':' (not set up)'));o.value=p.name;prov.append(o)}
-    prov.value=s.provider;sec.append(row('Method',prov));
+    prov.value=s.provider;
+    const pv=S.providers.find(p=>p.name===s.provider);if(s.mode!=='off'&&!(pv&&pv.configured))sec.append(el('div','note bad','Its posting method is not set up, so it cannot post: open Setup, Connect accounts.'));
     const chs=el('div','row'),cb2={};
     for(const c of S.channels){const l=el('label'),cb=el('input');cb.type='checkbox';cb.checked=s.channels.includes(c);cb2[c]=cb;l.append(cb,c);chs.append(l)}
     sec.append(el('div','mut','Only these streamers (tick the ones whose clips you are allowed to post: publishing needs the streamer\'s permission):'),
       S.channels.length?chs:el('div','hint','No clips yet.'));
     const num=(v,step)=>{const i=el('input');i.type='number';i.step=step||'1';i.min='0';i.value=v;return i};
     const per=num(s.max_per_day),gap=num(s.gap_min),delay=num(s.delay_min),age=num(s.max_age_h),prec=num(Math.round(s.min_precision*100)),conf=num(Math.round(s.min_confidence*100));
+    const adv=el('details');adv.open=!!folds.limits;adv.ontoggle=()=>{folds.limits=adv.open};
+    adv.append(el('summary',null,'Limits and safety: '+s.max_per_day+' posts a day, '+s.gap_min+' min apart, '+s.delay_min+' min to cancel'),row('How to post',prov));
     const lim=el('div','row');
     lim.append(el('span','mut','At most'),per,el('span','mut','posts per 24 h, at least'),gap,el('span','mut','min apart, wait'),delay,el('span','mut','min before posting (your time to veto), never older than'),age,el('span','mut','h'));
-    sec.append(lim);
+    adv.append(lim);
     const sco=el('div','row'),minS=num(s.min_score),trS=num(s.trash_below);
     sco.append(el('span','mut','Post only clips scoring at least'),minS,el('span','mut','. Move clips scoring under'),trS,el('span','mut','to Trash (0 = never; you can Undo). Scores in between wait for you.'));
-    sec.append(sco);
+    adv.append(sco);
     const req=el('div','row');
     req.append(el('span','mut','It must have been right at least'),prec,el('span','mut','% of the time on your past clips, and be at least'),conf,el('span','mut','% sure of each clip'));
-    sec.append(req);
-    const stL=el('label'),useSt=el('input');useSt.type='checkbox';useSt.checked=s.use_style;stL.append(useSt,'Use my style (trim, captions, title, description, usual platforms, skip rules) - see "My style" below');sec.append(stL);
-    const capL=el('label'),cap=el('input');cap.type='checkbox';cap.checked=s.captions;capL.append(cap,'Add captions when autopilot has to export a clip itself (needs faster-whisper)');sec.append(capL);
+    adv.append(req);
+    const stL=el('label'),useSt=el('input');useSt.type='checkbox';useSt.checked=s.use_style;stL.append(useSt,'Use my style (trim, captions, title, description, usual platforms, skip rules) - see "My style" below');adv.append(stL);
+    const capL=el('label'),cap=el('input');cap.type='checkbox';cap.checked=s.captions;capL.append(cap,'Add captions when autopilot has to export a clip itself (needs faster-whisper)');adv.append(capL);sec.append(adv);
     const save=el('button','primary','Save'),m2=el('div','note');save.style.alignSelf='flex-start';
     if(flash){m2.className='note '+flash.cls;m2.textContent=flash.text;flash=null}
     save.onclick=async()=>{
@@ -98,7 +102,7 @@ async function openAutopilot(){
     return sec}
 
   function activity(){
-    const sec=el('div','acc');sec.append(el('b',null,'Activity'));
+    const sec=el('div','acc');
     sec.append(el('div','hint',S.posted_24h+' posted in the last 24 hours.'+(S.regret.decided?' Of its last '+S.regret.decided+' posts that you judged, you trashed '+S.regret.trashed+'.':'')));
     if(S.queue.length){sec.append(el('div','mut','Waiting to be posted:'));
       for(const q of S.queue)sec.append(el('div',null,apTime(q.at)+'  '+q.channel+'  '+pct(q.p||0)+'  '+(q.title||q.id)))}
@@ -108,7 +112,7 @@ async function openAutopilot(){
     return sec}
 
   function mystyle(){
-    const sec=el('div','acc'),st=S.style;sec.append(el('b',null,'My style'));
+    const sec=el('div','acc'),st=S.style;
     if(!st){sec.append(el('div','hint','Could not read your style files.'));return sec}
     sec.append(el('div',null,'Style: '+st.examples+' examples, updated '+(st.updated?new Date(st.updated*1000).toLocaleString():'never')+(S.settings.use_style?'':' (switched off)')));
     sec.append(el('div','hint','Every Keep, Trash, title or description edit, export and post of yours is an example. A rule changes only when at least 5 examples agree 70% of the time. "taught" rules come from the autoclip-teacher skill.'));
@@ -119,7 +123,8 @@ async function openAutopilot(){
     for(const pr of st.problems||[])sec.append(el('div','note bad',pr));
     return sec}
 
-  function paint(){body.replaceChildren(learned(),mystyle(),controls(),activity())}
+  function paint(){body.replaceChildren(controls(),fold('activity','Activity ('+S.queue.length+' waiting, '+S.posted_24h+' posted in 24 h)',activity(),S.queue.length>0),
+    fold('learned','What it has learned ('+S.counts.total+' decisions)',learned()),fold('style','My style',mystyle()))}
   await refresh();
 }
 document.getElementById('ap').onclick=openAutopilot;

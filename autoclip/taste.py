@@ -19,7 +19,6 @@ import json
 import math
 import os
 import random
-import re
 import threading
 import time
 from collections import Counter

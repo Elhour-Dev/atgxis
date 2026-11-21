@@ -313,6 +313,16 @@ def test_done_frees_the_files_and_counts_as_keep(tmp_path):
     assert store.purge() == 0 and p.exists()                                                   # "Delete trashed files" leaves it alone
 
 
+def test_done_keeps_the_files_when_a_share_page_was_only_opened(tmp_path):
+    m = meta(1)
+    m["shares"] = {"tiktok": {"status": "opened", "actor": "you", "file": "c1_v.mp4"}}
+    p = write_clip(tmp_path / "clips", m)
+    before = sorted(x.name for x in p.parent.iterdir())
+    assert not review.Store(tmp_path / "clips", Config()).set_status(m["id"], "done")           # nothing was uploaded yet
+    assert sorted(x.name for x in p.parent.iterdir()) == before
+    assert json.loads(p.read_text(encoding="utf-8")).get("status") != "done"
+
+
 def test_done_needs_a_shared_clip(tmp_path):
     root = tmp_path / "clips"
     p = write_clip(root, meta(1))

@@ -20,6 +20,7 @@ around each moment. You review the clips afterwards in a local web page. Free, r
    python -m autoclip demo       # 1-minute offline self-test with fake video + chat
    ```
    If `demo` says PASSED, ffmpeg, cutting, detection and the review page all work on your machine.
+   Forgot a command? `python -m autoclip` on its own prints a short "start here" guide.
 
 ## Use
 
@@ -38,24 +39,24 @@ python -m autoclip review                                   # later: opens the r
   already running are finished, and renders still waiting in line are skipped (their draft exists; press **Export** in the review page).
 * Clips land in `clips\<channel>\<date_time>\` as **drafts**: ~40 s of context around the moment, made by stream copy in
   under a second (no CPU use, no quality loss). Nothing is encoded until you ask.
-* The review page has tabs at the top: **To review · Kept · Trash · Done · All**, each with its count, plus the order (best score
-  first by default). **📐 Layout** sets where the webcam and the game go in 9:16 clips (per streamer). Folders and posting accounts
-  are under **⚙ Setup** (a dot on it means no posting account is connected yet). The top bar shrinks when you scroll down.
+* The review page has tabs at the top: **To review · Kept · Trash · Archived · All**, each with its count, plus the order (best score
+  first by default). **⚙ Setup** holds **Connect accounts**, **Video layout** (where the webcam and the game go in 9:16 clips, per
+  streamer) and **Folders** (a dot on it means no posting account is connected yet). The top bar shrinks when you scroll down.
 * The page never redraws under your hands. While you are working (typing, playing a video, or you clicked or scrolled in the last
   30 s) new clips and changes wait behind a green **"3 new clips · Show"** button; when you leave the page alone they appear by
   themselves. Your own actions (Keep, Trash, a finished export) show at once.
-* Each clip card reads top to bottom: score, title, streamer and age; the video; a **trim bar** under it; what chat was saying; then
+* Each clip card reads top to bottom: score, title, streamer and age; the video; a **trim bar** under it; **Why this clip** (what chat was saying, folded); then
   **Keep / Trash** (always in the same place); then three steps: **① Export → ② Post text → ③ Share**. A step turns green with ✓ when
   it is done, and Share stays locked until the clip is exported.
 * Each draft opens already trimmed to a **suggested 30 s window**. Drag the two handles on the trim bar (the yellow line is the moment
-  chat exploded; click the bar to jump the player there), or use **Start here / End here** at the player position; **Fine-tune**
+  chat exploded; click the bar to jump the player there), or use **Start here / End here** at the player position; **More trim options**
   has exact seconds, *◀ 5 s / 5 s ▶* and *30 s*. The player loops your trim. In **① Export** tick **Vertical 9:16** and/or
   **Captions** and press **Export clip**: ONE encode does the exact trim + layout + captions. Then **Keep / Trash**;
   "Delete trashed files" (on the Trash tab) frees disk.
 * **Keyboard:** click a card (or use **← →**, or **J / L**) to pick it, then **K** keep, **T** trash, **U** undo, **Space** play/pause.
   After Keep or Trash the next clip is picked for you, so you can review a whole list without the mouse.
-  Posted a clip already? Press **Done (free space)** instead of Trash: it deletes that clip's draft, exports and caption data (not the
-  copy in your final clips folder), keeps it listed under "Done", and counts it as a Keep.
+  Posted a clip already? Press **Archive (free space)** instead of Trash: it deletes that clip's draft, exports and caption data (not the
+  copy in your final clips folder), keeps it listed under "Archived", and counts it as a Keep. If you only opened a platform's upload page, press **Mark as posted** first.
   Keep / Trash also teach the [🤖 Autopilot](#-autopilot-it-learns-what-you-keep-and-posts-the-good-ones-for-you), which can learn your taste and post the good clips for you.
 
 ## Several streams at once
@@ -145,7 +146,7 @@ Loudness bonus: a clip scores up to +10 if the audio is louder after the moment 
 * **Near-misses are logged** (`near-miss: chat 1.7x normal (needed 1.9x)`): if you see many for moments you wanted, lower `mult`.
   A session summary at the end counts spikes, near-misses, clips, skipped duplicates and failed cuts.
 * Everything is also written to `autoclip.log` in the clips folder: send that file when something looks wrong.
-* Window position: the 30 s window starts 15 s before chat took off. Drag it on the trim bar, or use **◀ 5 s / 5 s ▶** under *Fine-tune*, to slide it.
+* Window position: the 30 s window starts 15 s before chat took off. Drag it on the trim bar, or use **◀ 5 s / 5 s ▶** under *More trim options*, to slide it.
 
 ## Folders
 **⚙ Setup → 📁 Folders** in the review page: pick where **finished clips** are copied (any folder, with a Browse dialog) and where drafts live.
@@ -153,7 +154,7 @@ Saved in your user settings (`%APPDATA%\autoclip\settings.json`), so `git pull` 
 Explorer.
 
 ## Sharing to TikTok / YouTube Shorts / Instagram Reels
-Export a clip (vertical, trimmed, captions as you like), open **Share**, pick a **method**, tick the platforms, **Share selected...**.
+Export a clip (vertical, trimmed, captions as you like), open **Share**, pick **How to post**, tick the platforms, **Share selected...**.
 You always get a confirmation first; nothing is opened or uploaded before you press OK. Safety rules: only exported clips can be shared,
 one invalid or not-connected platform blocks the whole request (nothing is uploaded), an already-posted platform is not posted again
 unless you tick "post again", and each result is recorded.
@@ -165,12 +166,12 @@ posts to your other platforms and skips Instagram for that clip. Before an Insta
 the same moment of the same stream was already posted anywhere: on another platform, or from another clip that overlaps it.
 
 * **Share assistant** (no setup): opens each platform's upload page, selects the file, copies the caption; you press Post.
-* **⚡ Quick connect + "Post automatically"** (free, fastest to set up): the **⚡ Quick connect** button opens a 4-step guide. You create a
+* **Easy setup + "Post automatically"** (free, fastest to set up): **⚙ Setup → Connect accounts → Instagram + TikTok** opens a 4-step guide. You create a
   free [Zernio](https://zernio.com) account, connect Instagram + TikTok there, paste one API key here. No developer apps, no approval waits.
   Zernio's free plan covers your first 2 connected accounts with unlimited posts, so keep YouTube on the direct method below. "Post
   automatically" then uses Zernio for Instagram/TikTok and your own account for YouTube. TikTok can post publicly or go to your drafts.
 * **Post directly to my connected accounts** (free, official APIs): uploads for you. Set up once with a guided window:
-  `python -m autoclip connect` (or `connect youtube` / `instagram` / `tiktok`), or press **🔗 Accounts** in the review page, or press the
+  `python -m autoclip connect` (or `connect youtube` / `instagram` / `tiktok`), or use **⚙ Setup → Connect accounts** in the review page, or press the
   **Connect ...** button that appears in a clip's Share box when a platform is missing. Logins are kept in `%APPDATA%\autoclip\accounts.json` on your PC only.
 
 ### Connecting an account (what is easier now, and what cannot be)
@@ -209,10 +210,10 @@ your bad ones, it can post the clips it is sure about **without you pressing any
 *Undo* withdraws a decision. It never learns from its own posts (it would only agree with itself), but it *does* learn when you judge them.
 Decisions are kept in your settings folder (`%APPDATA%\autoclip\taste\`), not with the clips, so **Delete trashed files does not make it
 forget**. Keeps and Trashes you made before this feature existed are taken over automatically the first time.
-**Done (free space)** on a clip you posted counts as a Keep. A Trash on a clip you posted yourself also counts as a Keep (posting it
-already said it was good; before the Done button, Trash was the only way to free the space). For the Autopilot's own posts, only your
-Trash counts against it: Done there is neither good nor bad and teaches nothing. If Done answers "failed", a video is still playing in
-the page or an export is running: pause it or wait, then press Done again (nothing was marked).
+**Archive (free space)** on a clip you posted counts as a Keep. A Trash on a clip you posted yourself also counts as a Keep (posting it
+already said it was good; before the Archive button, Trash was the only way to free the space). For the Autopilot's own posts, only your
+Trash counts against it: Archive there is neither good nor bad and teaches nothing. If Archive answers "failed", a video is still playing in
+the page or an export is running: pause it or wait, then press Archive again (nothing was marked).
 
 **What it looks at.** Only what was measured about the clip: how big the chat spike was against normal, how loud the stream got, the
 streamer, which reaction it was, and which words chat was spamming (e.g. it can learn "I keep KEKW clips from X and trash the rest"). It
@@ -220,12 +221,13 @@ streamer, which reaction it was, and which words chat was spamming (e.g. it can 
 
 **Using it.** Press **🤖 Autopilot** in the review page.
 1. Keep reviewing. Each card shows `🤖 87%` (hover for *why*: streamer, chat words, loudness). **Autopilot pick first** sorts by it.
-2. The window shows what it learned and a table of what each confidence level *would have done on clips you already judged* (clips it did not
+2. Open **What it has learned** for a table of what each confidence level *would have done on clips you already judged* (clips it did not
    learn from), so you see the real hit rate before trusting it.
 3. Pick **Suggest only** first: it marks the clips it would post, posts nothing, and you can check its taste against yours.
 4. Then **Post automatically**: tick the platforms, the **streamers** (only ones whose clips you are allowed to post: publishing someone
    else's stream needs their permission), and press Save. It posts while `python -m autoclip run` is running, or on its own with
    `python -m autoclip autopilot run`. `python -m autoclip autopilot status` explains where it stands in plain words.
+   The daily cap, spacing, waiting time and score rules are under **Limits and safety**.
 
 **When it is allowed to post.** All of these, checked on predictions for clips the model had never seen while learning
 (cross-validation):
@@ -263,9 +265,9 @@ their permission can get you struck or banned whatever the program thinks of the
 
 Taste decides *which* clips go out; style decides *how*: the trim, captions, title, description and platforms, the way **you** do them.
 
-* **Examples.** Every Keep, Trash, Done, Undo, title or description edit, export and post of yours adds one line to
+* **Examples.** Every Keep, Trash, Archive, Undo, title or description edit, export and post of yours adds one line to
   `<settings folder>\style\examples.jsonl`, with everything about the clip at that moment, so deleting files loses nothing.
-  Good = kept, Done or posted by you. Bad = trashed and never posted by you. An Autopilot post you trash later is bad *and* counts as a
+  Good = kept, archived or posted by you. Bad = trashed and never posted by you. An Autopilot post you trash later is bad *and* counts as a
   rule failure. The Autopilot's own untouched titles, trims and posts are logged as its own and **never** learned as yours.
 * **Learning.** After each new example, `learned.json` is rebuilt in the background from your last 50 examples, per streamer and for all
   streamers together. It learns title case, word limit and emoji habit; fixed hashtags, hashtag count and credit line; captions
@@ -285,11 +287,11 @@ Taste decides *which* clips go out; style decides *how*: the trim, captions, tit
 
 ## 💰 Paid clipping campaigns (Content Rewards and the like)
 Press **💰 Campaigns** in the review page, then **+ Add campaign**: a form asks for the campaign's name, its page link, the
-streamers (click one you already clip, or paste their twitch.tv link), the platforms it pays for, the pay, the end date and its rules
-(disclosure text, hashtags, what must stay visible, clip length). **Edit** next to a campaign changes it (renaming keeps its posts and
+streamers (click one you already clip, or paste their twitch.tv link), the platforms it pays for and the pay. Open **Campaign rules** for the payout limits, end date,
+disclosure text, hashtags, what must stay visible and clip length. **Edit** next to a campaign changes it (renaming keeps its posts and
 stats); **Delete campaign** removes it. Everything is checked before it is saved, and the form says what to fix.
 It is stored in `campaigns.json` in your settings folder (`%APPDATA%\autoclip\campaigns.json`, so `git pull` never touches it);
-**Advanced: edit campaigns.json directly** shows the file itself. The fields, as the file names them:
+**Advanced: edit the campaigns file** shows the file itself. The fields, as the file names them:
 
 | Field | Meaning |
 |---|---|
@@ -319,10 +321,11 @@ Instagram, Zernio and the Share assistant do not set it: the card lists each fla
 
 **After posting**: every campaign post is saved with its link (paste it when the platform gives none) and goes on the **To submit**
 list. The list has **one row per clip**: **Copy all links** (one per line, ready to paste into the campaign), **Open campaign**, and a
-**Submitted** tick per link. A post that only reached your drafts / inbox (or the Share assistant) goes on the list when you press
+**Submitted** tick per link. A link you typed stays in its box until it is saved, even when the window updates; changing that post's
+status under **Posts** saves it too. A post that only reached your drafts / inbox (or the Share assistant) goes on the list when you press
 **Mark as posted**, so the 30 minutes start when it is really public. You get a desktop notification when it is posted; the row turns
 red 25 minutes after the clip's **earliest** post (most campaigns want the link within 30), and the page warns you once more if you
-allowed its alerts. In the posts list below it, mark each post
+allowed its alerts. Under **Posts** on each campaign, mark each post
 **Submitted / Approved / Rejected**; a rejection needs the campaign's reason and is saved as a *bad* example in your style log
 (`examples.jsonl`, with that reason) so the teacher skill can learn from it.
 
@@ -339,10 +342,10 @@ for that streamer the moment the campaign ends, reaches its cap or you set `budg
 Platform programmes pay more for clips with your own touch. In **Export**, open **Make it original**: type a **hook** (big text for the
 first 2.5 seconds) and **🎙 Record** a voice-over in the page or **Pick a file** (webm / ogg / mp3 / wav / m4a, up to 25 MB). Tick
 **Use my voice-over** and export: your voice starts with the clip and the stream sound goes quieter while you talk. Clips that have them
-are tagged on the card (🎙 / 🪝). The voice-over file is kept next to the clip and deleted with it (Done / Delete trashed files).
+are tagged on the card (🎙 / 🪝). The voice-over file is kept next to the clip and deleted with it (Archive / Delete trashed files).
 
 **Hooks are made for you.** Leave the hook empty and every export (yours, Autopilot's and the automatic 9:16 render) gets one:
-- **Where it comes from:** with a free **Groq key** (press **Groq key…**, get one at console.groq.com) it is written from what the
+- **Where it comes from:** with a free **Groq key** (open **Hook color and Groq key**, press **Groq key…**, get one at console.groq.com) it is written from what the
   streamer said. Without a key, or when Groq fails, it is picked from built-in templates in the clip's language (English, French,
   Spanish, German, Portuguese; the caption language setting wins, else the transcript's words decide). Your own hook lines from your
   learned style are tried first. Other languages without a key: type the hook yourself.
@@ -388,15 +391,15 @@ picture (no extra program needed):
   zoom can never crop them.
 - **Different every clip:** zoom sizes, timings and layout steps are random per clip, but the same clip always gets the same
   choices, so the before / after still matches the export. **🎲 Shuffle** picks new ones.
-- **On the card**, under **Reframe & quality**: switches for Reframe, Zooms, Webcam only → split → webcam only, Follow gameplay and
+- **On the card**, under **Zoom and preview**: switches for Auto zoom and framing, Zooms, Webcam for intro and ending, Follow gameplay and
   Freeze on peak. Exports with a reframe get `_rf` in their file name. The analysis is cached next to the draft
   (`<clip>.signals.json`) and deleted with it.
 
 ## Post text (title + description) for every clip
 Open **② Post text** on any clip. Titles are built from what is specific to that clip: the phrase chat was spamming ("NO WAY", "KEKW"),
 how big the spike was, whether the streamer got loud, and which reaction it was (funny / shock / hype). Buttons:
-**↻ Other title** steps through six options, and fetches a brand-new set when they run out; **🔄 New ideas** makes a new set right away
-(titles already shown for that clip are never repeated); **🎧 From what is said** listens to the clip (needs `faster-whisper`, see Captions)
+**↻ New title** steps through six options, and fetches a brand-new set when they run out
+(titles already shown for that clip are never repeated); **🎧 Use the streamer's words** listens to the clip (needs `faster-whisper`, see Captions)
 and quotes the streamer's own words in the titles. The description gets a hook line (or the quote), a credit line, and the streamer's **@tag** followed by the hashtags (the @tag is always there); text you
 edited yourself is never overwritten. These are rule-based suggestions, not AI-written copy.
 Set nicer names in `config.toml`:  `display_names = { kaicenat = "Kai Cenat" }`,  `handles = { kaicenat = "kaicenat" }` (the @tag, when their TikTok / Instagram handle differs from the channel name; for YouTube the @handle comes from an
@@ -414,7 +417,7 @@ If you copied the old `config.example.toml`, the old `quality = "720p60,720p,480
 **Quality guard.** Every export is made in **one pass from the original recording** (the buffer and drafts are never re-encoded),
 with lanczos scaling, at 30 fps. The quality never goes below **CRF 18**, even if `config.toml` asks for more (hardware encoders: the
 same cap). Zooms (see *Reframe*) never enlarge the stream's own pixels more than **1.5x**: a panel that your layout already enlarges
-more than that gets no zoom, and a light sharpen is added only while zoomed. Open **Reframe & quality** on a card and press
+more than that gets no zoom, and a light sharpen is added only while zoomed. Open **Zoom and preview** on a card and press
 **Show before / after** to see the stream frame next to the finished 9:16 frame at the chat moment, with how much each panel is
 enlarged and its zoom room. Below 1080p the box warns that zooms are small or off.
 
