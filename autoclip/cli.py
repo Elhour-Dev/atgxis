@@ -410,11 +410,22 @@ def cmd_demo(args) -> int:
     return 0 if clips else 1
 
 
+START_HERE = """autoclip: start here
+
+  1. Check your PC:      python -m autoclip doctor
+  2. Watch a stream:     python -m autoclip run <channel>
+  3. Review your clips:  python -m autoclip review
+
+Posting, layouts and Autopilot are all on the review page.
+Something not working?  python -m autoclip check <channel>
+All commands:           python -m autoclip --help"""
+
+
 def main(argv=None) -> int:
     _setup_logging()
     ap = argparse.ArgumentParser(prog="autoclip", description="Auto-clip live streams when chat spikes.")
     ap.add_argument("--config", help="TOML settings file (see config.example.toml)")
-    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub = ap.add_subparsers(dest="cmd")
     sub.add_parser("doctor", help="check that required tools are installed")
     r = sub.add_parser("run", help="watch one or more live streams and clip them")
     r.add_argument("targets", nargs="+", help="twitch name / twitch.tv link / youtube live link")
@@ -440,4 +451,9 @@ def main(argv=None) -> int:
     d = sub.add_parser("demo", help="offline self-test with fake video and chat")
     d.add_argument("--out")
     args = ap.parse_args(argv)
+    if not args.cmd:
+        if args.config is not None:
+            ap.error("--config needs a command, for example: python -m autoclip --config my.toml run <channel>")
+        print(START_HERE)
+        return 0
     return {"doctor": cmd_doctor, "run": cmd_run, "review": cmd_review, "connect": cmd_connect, "check": cmd_check, "autopilot": cmd_autopilot, "demo": cmd_demo}[args.cmd](args)

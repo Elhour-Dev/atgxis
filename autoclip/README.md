@@ -20,6 +20,7 @@ around each moment. You review the clips afterwards in a local web page. Free, r
    python -m autoclip demo       # 1-minute offline self-test with fake video + chat
    ```
    If `demo` says PASSED, ffmpeg, cutting, detection and the review page all work on your machine.
+   Forgot a command? `python -m autoclip` on its own prints a short "start here" guide.
 
 ## Use
 
@@ -220,12 +221,13 @@ streamer, which reaction it was, and which words chat was spamming (e.g. it can 
 
 **Using it.** Press **🤖 Autopilot** in the review page.
 1. Keep reviewing. Each card shows `🤖 87%` (hover for *why*: streamer, chat words, loudness). **Autopilot pick first** sorts by it.
-2. The window shows what it learned and a table of what each confidence level *would have done on clips you already judged* (clips it did not
+2. Open **What it has learned** for a table of what each confidence level *would have done on clips you already judged* (clips it did not
    learn from), so you see the real hit rate before trusting it.
 3. Pick **Suggest only** first: it marks the clips it would post, posts nothing, and you can check its taste against yours.
 4. Then **Post automatically**: tick the platforms, the **streamers** (only ones whose clips you are allowed to post: publishing someone
    else's stream needs their permission), and press Save. It posts while `python -m autoclip run` is running, or on its own with
    `python -m autoclip autopilot run`. `python -m autoclip autopilot status` explains where it stands in plain words.
+   The daily cap, spacing, waiting time and score rules are under **Limits and safety**.
 
 **When it is allowed to post.** All of these, checked on predictions for clips the model had never seen while learning
 (cross-validation):
@@ -285,11 +287,11 @@ Taste decides *which* clips go out; style decides *how*: the trim, captions, tit
 
 ## 💰 Paid clipping campaigns (Content Rewards and the like)
 Press **💰 Campaigns** in the review page, then **+ Add campaign**: a form asks for the campaign's name, its page link, the
-streamers (click one you already clip, or paste their twitch.tv link), the platforms it pays for, the pay, the end date and its rules
-(disclosure text, hashtags, what must stay visible, clip length). **Edit** next to a campaign changes it (renaming keeps its posts and
+streamers (click one you already clip, or paste their twitch.tv link), the platforms it pays for and the pay. Open **Campaign rules** for the payout limits, end date,
+disclosure text, hashtags, what must stay visible and clip length. **Edit** next to a campaign changes it (renaming keeps its posts and
 stats); **Delete campaign** removes it. Everything is checked before it is saved, and the form says what to fix.
 It is stored in `campaigns.json` in your settings folder (`%APPDATA%\autoclip\campaigns.json`, so `git pull` never touches it);
-**Advanced: edit campaigns.json directly** shows the file itself. The fields, as the file names them:
+**Advanced: edit the campaigns file** shows the file itself. The fields, as the file names them:
 
 | Field | Meaning |
 |---|---|
@@ -322,7 +324,7 @@ list. The list has **one row per clip**: **Copy all links** (one per line, ready
 **Submitted** tick per link. A post that only reached your drafts / inbox (or the Share assistant) goes on the list when you press
 **Mark as posted**, so the 30 minutes start when it is really public. You get a desktop notification when it is posted; the row turns
 red 25 minutes after the clip's **earliest** post (most campaigns want the link within 30), and the page warns you once more if you
-allowed its alerts. In the posts list below it, mark each post
+allowed its alerts. Under **Posts** on each campaign, mark each post
 **Submitted / Approved / Rejected**; a rejection needs the campaign's reason and is saved as a *bad* example in your style log
 (`examples.jsonl`, with that reason) so the teacher skill can learn from it.
 
@@ -342,7 +344,7 @@ first 2.5 seconds) and **🎙 Record** a voice-over in the page or **Pick a file
 are tagged on the card (🎙 / 🪝). The voice-over file is kept next to the clip and deleted with it (Archive / Delete trashed files).
 
 **Hooks are made for you.** Leave the hook empty and every export (yours, Autopilot's and the automatic 9:16 render) gets one:
-- **Where it comes from:** with a free **Groq key** (press **Groq key…**, get one at console.groq.com) it is written from what the
+- **Where it comes from:** with a free **Groq key** (open **Hook color and Groq key**, press **Groq key…**, get one at console.groq.com) it is written from what the
   streamer said. Without a key, or when Groq fails, it is picked from built-in templates in the clip's language (English, French,
   Spanish, German, Portuguese; the caption language setting wins, else the transcript's words decide). Your own hook lines from your
   learned style are tried first. Other languages without a key: type the hook yourself.

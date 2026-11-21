@@ -30,8 +30,8 @@ function cpBadge(c){
 
 function cpExportExtras(c,t){
   const box=el('details','fine');box.open=!!openSt.get(c.id+'og');
-  const vo=c.voiceover;box.append(el('summary',null,'Make it original: hook text + your voice-over'+(vo?' 🎙':'')));
-  const hrow=el('div','row'),hk=el('input');hk.type='text';hk.maxLength=120;hk.placeholder='Hook: 7 words max, first 2.5 s. Empty = one is made for you at export';hk.value=t.hook||'';hk.oninput=()=>{t.hook=hk.value;t.hookSrc='you';hn.textContent=''};hk.style.cssText='flex:1;min-width:180px';
+  const vo=c.voiceover;box.append(el('summary',null,'Make it original: hook + voice-over'+(vo?' 🎙':'')));
+  const hrow=el('div','row'),hk=el('input');hk.type='text';hk.maxLength=120;hk.placeholder='Hook (7 words max). Empty = made for you';hk.value=t.hook||'';hk.oninput=()=>{t.hook=hk.value;t.hookSrc='you';hn.textContent=''};hk.style.cssText='flex:1;min-width:180px';
   const hn=el('span','mut',t.hookSrc&&t.hookSrc!=='you'?'('+t.hookSrc+')':'');
   const rg=el('button','sm','↻ Regenerate');rg.title='Another hook from what the streamer said (Groq) or from the templates';
   const sugg=async()=>{rg.disabled=true;rg.textContent='…';const r=await rpost('/api/hook/suggest',{id:c.id,start:t.start,end:t.end,avoid:t.hookSeen||[]});rg.disabled=!!t.hookOff;rg.textContent='↻ Regenerate';
@@ -45,7 +45,8 @@ function cpExportExtras(c,t){
   const gk=el('button','sm','Groq key…');gk.title='Optional: a free key from console.groq.com writes hooks from what the streamer said';
   gk.onclick=async()=>{const k=prompt('Paste your free Groq API key (console.groq.com, API Keys). It stays on this PC. Leave empty to remove it.');if(k===null)return;
     const r=await rpost('/api/hook/key',{key:k});alert(r.ok?(k.trim()?'Saved: new hooks are written by Groq.':'Removed: hooks come from the templates.'):await r.text())};
-  hrow.append(hk,rg,sty,off,gk,hn);
+  hrow.append(hk,rg,off,hn);
+  const hm=el('details'),hmr=el('div','row');hm.open=!!openSt.get(c.id+'hm');hm.ontoggle=()=>openSt.set(c.id+'hm',hm.open);hmr.append(sty,gk);hm.append(el('summary',null,'Hook color and Groq key'),hmr);
   box.ontoggle=()=>{openSt.set(c.id+'og',box.open);if(box.open&&!t.hook&&!t.hookOff)sugg()};
   const row=el('div','row'),st=el('span','mut',vo?'Voice-over saved ('+Math.round(vo.size/1024)+' KB)':'No voice-over yet');
   const use=el('label'),cb=el('input');cb.type='checkbox';cb.checked=!!(t.vo&&vo);cb.disabled=!vo;cb.onchange=()=>{t.vo=cb.checked};use.append(cb,'Use my voice-over (the stream sound goes quieter while I talk)');
@@ -63,24 +64,28 @@ function cpExportExtras(c,t){
       up(new Blob(chunks,{type}),type.includes('ogg')?'ogg':type.includes('mp4')?'m4a':'webm')};
     rec.start();rb.textContent='■ Stop recording';st.textContent='Recording… talk over the clip, then press Stop'};
   const del=el('button','sm','Remove');del.hidden=!vo;del.onclick=async()=>{if(await post('/api/voiceover/delete',{id:c.id})){t.vo=false;load(true)}};
-  row.append(rb,pb,pick,del,st);box.append(hrow,row,use,el('div','hint','The voice-over starts with the clip. Both are burned into the next export, and the clip is tagged so you can see which clips have them.'));
+  row.append(rb,pb,pick,del,st);box.append(hrow,hm,row,...(vo?[use]:[]),el('div','hint','Both go into your next export.'));
   return box}
 
 async function openCampaigns(){
   const ov=el('div','modal'),box=el('div','mbox');ov.append(box);
   box.append(el('h2',null,'💰 Campaigns'));
-  box.append(el('div','hint','Paid clipping campaigns (Content Rewards and the like). While a campaign is live, every clip of its streamers keeps the required part of the picture visible, gets the disclosure burned in for its first 3 seconds, "#ad" first in the post text, the campaign hashtags and a credit line. Post stays blocked until the campaign rules pass. Submit each post link on the campaign page within 30 minutes.'));
+  box.append(el('div','hint','Paid clipping campaigns. While one is live, its clips get the required disclosure and hashtags, and posting stays blocked until its rules pass. Submit each post link on the campaign page within 30 minutes.'));
   const body=el('div');body.style.cssText='display:flex;flex-direction:column;gap:12px';box.append(body);
   const close=el('button',null,'Close');box.append(close);
   document.body.append(ov);
   let S=null,editing=null,flash=null;
   let dirty=false;                             // a link you pasted but did not save yet: no background redraw may wipe it
+  let advOpen=false;                           // the Advanced fold stays as you left it across redraws
   let form=null;                               // null = the lists; -1 = a new campaign; n = editing entry n of campaigns.json
-  const iv=setInterval(()=>{if(!ov.isConnected){clearInterval(iv);return}if(form===null&&!dirty&&!body.contains(document.activeElement))refresh()},15000);
+  const openPosts=new Set();                   // campaigns whose post list you opened: survives the background redraw
+  const iv=setInterval(()=>{if(!ov.isConnected){clearInterval(iv);return}const ae=document.activeElement;if(form===null&&!dirty&&!(body.contains(ae)&&ae.tagName!=='SUMMARY'))refresh()},15000);
   close.onclick=()=>{clearInterval(iv);ov.remove();sig='';load(true);cpPoll()};
   async function refresh(){S=await (await fetch('/api/campaigns')).json();if(form===null)paint()}     // never redraw an open form
   const jpost=async(u,d)=>fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});
-  function paint(){body.replaceChildren(...(form!==null?[formView()]:[todo(),mine(),file()]))}
+  function paint(){const old=[...body.querySelectorAll('summary')],at=old.indexOf(document.activeElement);       // a redraw keeps keyboard focus on the fold title
+    body.replaceChildren(...(form!==null?[formView()]:[...(S.to_submit.length?[todo()]:[]),mine(),file()]));
+    if(at>=0){const n=body.querySelectorAll('summary')[at];if(n)n.focus({preventScroll:true})}}
   const slug=s=>String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,40)||'campaign';   // = campaigns._slug
   function rawList(){if(!S.exists)return [];try{const d=JSON.parse(S.text),a=Array.isArray(d)?d:(d&&d.campaigns);return Array.isArray(a)?a:null}catch(e){return null}}
   const rawId=r=>slug(r&&(r.id||r.name));
@@ -93,6 +98,7 @@ async function openCampaigns(){
     if(!r.ok)return await r.text();form=null;editing=null;await refresh();load(true);return null}     // an Advanced draft is now stale: saving it would undo this
   async function trySave(change){try{return await saveList(change)}catch(x){return 'Could not save (is the review page still running?): '+x}}
 
+  const editHasRules=r=>{const x=(r&&r.rules)||{};return !!(r&&(r.min||r.cap||r.ends||r.budget_empty))||!!(x.must_show||x.min_len_s||x.max_len_s||x.need_speech||x.no_ai||x.notes||(x.hashtags||[]).length)};
   function formView(){                         // the easy way: a form; the server checks everything again on save
     const list=rawList()||[],isNew=form<0,src=isNew?{}:(list[form]||{}),r0=(src.rules&&typeof src.rules==='object')?src.rules:{};
     const want=JSON.stringify(src);let at=form;
@@ -116,15 +122,17 @@ async function openCampaigns(){
     const plats={},pr=row();for(const p of ['tiktok','youtube','instagram']){const c=chk(arr(src.platforms).includes(p),cpLabel(p));plats[p]=c.cb;pr.append(c)}
     field('Pays for',pr,'Only these platforms can be posted to for this campaign');
     const rate=num(src.rate_per_1k,'1.00'),mn=num(src.min,'0'),cap=num(src.cap,'0');
-    field('Pay',row(el('span',null,'$'),rate,el('span','mut','per 1000 views · minimum payout $'),mn,el('span','mut','· maximum $'),cap,el('span','mut','(0 = no maximum)')));
+    field('Pay',row(el('span',null,'$'),rate,el('span','mut','per 1000 views')));
+    const act=chk(isNew?true:src.active===true,'Running: use this campaign now'),bud=chk(src.budget_empty,'Budget used up (stops posting)');
+    field('Status',row(act));
+    const more=el('details');more.open=!isNew&&editHasRules(src);more.append(el('summary',null,'Campaign rules: payout, end date, disclosure, hashtags, length'));sec.append(more);
+    const g2=el('div','form2');more.append(g2);
+    const f2=(label,input,tip)=>{const l=el('span','lbl',label);if(tip){l.title=tip;input.title=tip}g2.append(l,input);return input};
+    f2('Payout',row(el('span','mut','minimum $'),mn,el('span','mut','maximum $'),cap,el('span','mut','(0 = no maximum)')));
     const ends=el('input');ends.type='date';const day0=/^\d{4}-\d{2}-\d{2}/.test(String(src.ends||''))?String(src.ends).slice(0,10):'';ends.value=day0;
     const endsOut=()=>day0&&ends.value===day0?src.ends:(ends.value||null);       // an untouched "2026-12-31T18:00" keeps its time; an unreadable one can be cleared
-    field('Ends',row(ends,el('span','mut','leave empty if it has no end date')));
-    const act=chk(isNew?true:src.active===true,'Running: use this campaign now'),bud=chk(src.budget_empty,'Budget used up (stops posting)');
-    field('Status',row(act,bud));
-    sec.append(el('b',null,'Rules (from the campaign page)'));
-    const g2=el('div','form2');sec.append(g2);
-    const f2=(label,input,tip)=>{const l=el('span','lbl',label);if(tip){l.title=tip;input.title=tip}g2.append(l,input);return input};
+    f2('Ends',row(ends,el('span','mut','leave empty if it has no end date')));
+    f2('Budget',row(bud));
     const disc=txt(r0.disclosure===undefined?'Ad':(r0.disclosure||''),'Ad');disc.style.width='160px';
     f2('Disclosure',row(disc,el('span','mut','burned into the first 3 seconds; empty = none')));
     const tags=f2('Hashtags',txt(arr(r0.hashtags).join(' '),'#ad #kaicenat (every post gets these)'));
@@ -157,7 +165,7 @@ async function openCampaigns(){
           must_show:ms.value||null,min_len_s:n(lo),max_len_s:n(hi),need_speech:sp.cb.checked,no_ai:ai.cb.checked,notes:notes.value}};
       if(!isNew&&!src.id)e.id=slug(src.name);              // renaming keeps its posts and stats
       sv.disabled=true;const err=await trySave(same(nl=>{if(isNew)nl.push(e);else nl[at]=e;return nl}));sv.disabled=false;
-      if(err)return fail(err);form=null;paint()};
+      if(err){more.open=true;return fail(err)}form=null;paint()};
     del.onclick=async()=>{if(!confirm('Delete the campaign "'+(src.name||'')+'"?'+NL+NL+'Posts already logged for it stay in the list.'))return;
       const err=await trySave(same(nl=>{nl.splice(at,1);return nl}));if(err)return fail(err);form=null;paint()};
     sec.append(msg,row(sv,cancel,el('span','grow'),del));
@@ -165,8 +173,6 @@ async function openCampaigns(){
 
   function todo(){
     const sec=el('div','acc'),n=S.to_submit.reduce((a,g)=>a+g.posts.length,0);sec.append(el('b',null,'To submit ('+n+')'));
-    if(!S.to_submit.length)sec.append(el('div','mut','Nothing waiting. A post made for a campaign shows up here: submit its link on the campaign page within 30 minutes.'));
-    if('Notification' in window&&Notification.permission==='default'){const nb=el('button','sm','Turn on desktop alerts');nb.title='The page warns you when a clip is 25 minutes old and still not submitted';nb.onclick=async()=>{await Notification.requestPermission();paint()};nb.style.alignSelf='flex-start';sec.append(nb)}
     for(const g of S.to_submit){                          // one row per clip: all its posts, timed from the earliest one
       const box=el('div'),inputs={};box.style.cssText='display:flex;flex-direction:column;gap:4px;padding:6px;border-radius:8px;border:'+(g.late?'2px solid #d33':'1px solid #8884');
       const keep=async x=>{const u=inputs[x.id].value.trim();if(u===(x.url||''))return true;const r=await jpost('/api/campaigns/post',{id:x.id,url:u});if(!r.ok){alert(await r.text());return false}x.url=u;return true};
@@ -189,7 +195,9 @@ async function openCampaigns(){
   function mine(){
     const sec=el('div','acc'),list=rawList(),valid=new Set(S.campaigns.map(k=>k.id));
     const add=el('button','primary','+ Add campaign');add.onclick=()=>{form=-1;paint()};
-    const top=el('div','row');top.append(el('b',null,'Campaigns, posts and earnings'),el('span','grow'),add);sec.append(top);
+    const top=el('div','row');top.append(el('b',null,'Campaigns and earnings'),el('span','grow'));
+    if('Notification' in window&&Notification.permission==='default'){const nb=el('button','sm','Turn on desktop alerts');nb.title='The page warns you when a clip is 25 minutes old and still not submitted';nb.onclick=async()=>{await Notification.requestPermission();paint()};top.append(nb)}
+    top.append(add);sec.append(top);
     if(list===null){add.disabled=true;sec.append(el('div','note bad','campaigns.json is damaged, so the form cannot open it. Fix it under "Advanced" below (or replace it all with {"campaigns": []} to start again).'))}
     for(const p of S.problems)sec.append(el('div','note bad','⚠ '+p+' (this campaign is ignored until it is fixed)'));
     (list||[]).forEach((r,i)=>{if(valid.has(rawId(r)))return;const b=el('button','sm','Fix "'+((r&&r.name)||'campaign '+(i+1))+'"');b.onclick=()=>{form=i;paint()};b.style.alignSelf='flex-start';sec.append(b)});
@@ -200,24 +208,26 @@ async function openCampaigns(){
       if(at>=0){const ed=el('button','sm','Edit');ed.onclick=()=>{form=at;paint()};h.append(ed)}
       h.append(a,el('span','chip'+(why?'':' ok'),why?'not live: '+why:'live'),el('span','mut','$'+k.rate_per_1k+' per 1000 views · min '+money(k.min)+' · cap '+(k.cap?money(k.cap):'none')+(k.ends?' · ends '+k.ends:'')+' · '+k.platforms.map(cpLabel).join(', ')));
       sec.append(h,el('div',null,st.posted+' posted · '+st.submitted+' submitted · '+st.approved+' approved · '+st.rejected+' rejected · '+st.views.toLocaleString()+' views'),
-        el('div','hint','Estimated earnings (approved posts): '+money(st.earnings)+(st.earnings_if_approved>st.earnings?' · if the pending ones are approved too: '+money(st.earnings_if_approved):'')+'. min(views / 1000 × rate, cap) × 0.9, nothing under the minimum.'));
-      for(const x of S.posts.filter(x=>x.campaign===k.id).slice().reverse()){
+        el('div','hint','Estimated earnings (approved posts): '+money(st.earnings)+(st.earnings_if_approved>st.earnings?' · if the pending ones are approved too: '+money(st.earnings_if_approved):'')+'.'));
+      const ps=S.posts.filter(x=>x.campaign===k.id).slice().reverse(),pd=el('details');pd.open=openPosts.has(k.id);pd.ontoggle=()=>{pd.open?openPosts.add(k.id):openPosts.delete(k.id)};pd.append(el('summary',null,'Posts ('+ps.length+')'));
+      for(const x of ps){
         const r=el('div','row'),sel=el('select');for(const [v,l] of Object.entries(CP_ST)){const o=el('option',null,l);o.value=v;sel.append(o)}sel.value=x.status;
-        const why2=el('input');why2.type='text';why2.placeholder='Why was it rejected?';why2.value=x.reason||'';why2.hidden=x.status!=='rejected';
+        const why2=el('input');why2.type='text';why2.placeholder='Why was it rejected?';why2.value=x.reason||'';why2.style.width='190px';why2.style.display=x.status==='rejected'?'':'none';
         const vw=el('input');vw.type='number';vw.min='0';vw.placeholder='views';vw.value=x.views==null?'':x.views;vw.style.width='110px';vw.title=x.views_src==='api'?'Views from YouTube':'Views (type them in)';
         const save=async()=>{if(sel.value==='rejected'&&!why2.value.trim()){alert('Say why it was rejected: it is saved as a bad example for your style.');why2.focus();return}
           const d={id:x.id,status:sel.value,reason:why2.value};if(vw.value!==''&&+vw.value!==x.views)d.views=+vw.value;
           const q=await jpost('/api/campaigns/post',d);if(!q.ok){alert(await q.text());return}refresh();cpPoll()};
-        sel.onchange=()=>{why2.hidden=sel.value!=='rejected';if(sel.value!=='rejected')save();else why2.focus()};why2.onchange=save;vw.onchange=save;
+        sel.onchange=()=>{why2.style.display=sel.value==='rejected'?'':'none';if(sel.value!=='rejected')save();else why2.focus()};why2.onchange=save;vw.onchange=save;
         const link=x.url?el('a',null,'open post'):el('span','mut','no link yet');if(x.url){link.href=safeUrl(x.url);link.target='_blank'}
-        r.append(el('span',null,cpLabel(x.platform)),el('span','mut',String(x.title||x.clip).slice(0,40)),link,sel,why2,vw);sec.append(r)}}
+        r.append(el('span',null,cpLabel(x.platform)),el('span','mut',String(x.title||x.clip).slice(0,40)),link,sel,why2,vw);pd.append(r)}
+      if(ps.length)sec.append(pd)}
     const rv=el('button','sm','Refresh views (YouTube)'),nt=el('span','mut');rv.title='TikTok and Instagram views: type them in';
     rv.onclick=async()=>{rv.disabled=true;try{const r=await jpost('/api/campaigns/views',{});flash=r.ok?(await r.json()).note:await r.text()}catch(e){flash='Could not refresh the views: '+e}rv.disabled=false;await refresh()};
     if(flash){nt.textContent=flash;flash=null}
     const rr=el('div','row');rr.append(rv,nt);sec.append(rr);return sec}
 
   function file(){
-    const sec=el('details','acc');sec.open=editing!=null||rawList()===null;sec.append(el('summary',null,'Advanced: edit campaigns.json directly'));
+    const sec=el('details','acc');sec.open=advOpen||editing!=null||rawList()===null;sec.ontoggle=()=>{advOpen=sec.open};sec.append(el('summary',null,'Advanced: edit the campaigns file'));
     sec.append(el('div','hint','One entry per campaign: name, url (the campaign page), channels, platforms (tiktok / youtube / instagram), rate_per_1k, min, cap (0 = none), ends ("2026-12-31" or null), active, budget_empty (true stops posting), rules: disclosure ("Ad" or null), hashtags, must_show ("overlay", "facecam", "handle" or null), min_len_s, max_len_s (0 = no limit), need_speech, no_ai, notes. Stored in '+S.path));
     const ta=el('textarea');ta.rows=18;ta.spellcheck=false;ta.value=editing!=null?editing:S.text;ta.style.cssText='width:100%;box-sizing:border-box;font-family:monospace;font-size:12px';ta.oninput=()=>{editing=ta.value};
     const msg=el('div','hint');

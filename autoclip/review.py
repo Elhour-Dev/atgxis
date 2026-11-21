@@ -347,7 +347,8 @@ document.addEventListener('keydown',e=>{
 async function post(u,d){const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});if(!r.ok){alert(await r.text());return false}return true}
 
 let layouts={};
-async function loadShare(){try{shareInfo=await (await fetch('/api/share/providers')).json()}catch(e){}}
+async function loadShare(){try{shareInfo=await (await fetch('/api/share/providers')).json()}catch(e){}paintSetupDot()}
+function paintSetupDot(){const sb=document.getElementById('setupBtn'),none=!(shareInfo.providers||[]).some(p=>p.automatic&&p.configured);sb.classList.toggle('dot',none);sb.title=none?'No account connected for posting yet: open Connect accounts':'Accounts, video layout and folders'}
 function openFolders(){
   fetch('/api/settings').then(r=>r.json()).then(S=>{
     const ov=el('div','modal'),box=el('div','mbox');ov.append(box);box.append(el('h2',null,'Folders'));
@@ -442,8 +443,8 @@ async function openAccounts(focus){
   const build=()=>{list.replaceChildren(...Object.keys(S.platforms).map(card))};
   const cl=el('button',null,'Close');cl.onclick=()=>{ov.remove();sig='';load(true)};box.append(cl);build();document.body.append(ov);
   if(focus){const t=list.querySelector('[data-pl="'+focus+'"]');if(t)t.scrollIntoView()}}
-function openConnect(){
-  const ov=el('div','modal'),box=el('div','mbox');ov.append(box);box.append(el('h2',null,'Connect accounts'),el('div','hint','Only needed for automatic posting. You can always share a clip by hand without connecting anything.'));
+async function openConnect(){
+  await loadShare();if(document.querySelector('.modal'))return;const ov=el('div','modal'),box=el('div','mbox');ov.append(box);box.append(el('h2',null,'Connect accounts'),el('div','hint','Only needed for automatic posting. You can always share a clip by hand without connecting anything.'));
   for(const [k,v] of Object.entries(shareInfo.platforms||{})){const ok=(shareInfo.connected||{})[k]||(shareInfo.quick||{})[k],r=el('div','row');r.append(el('b',null,v.label),el('span','chip'+(ok?' ok':''),ok?'✅ Connected':'Not connected'));box.append(r)}
   const go=(label,cls,fn)=>{const b=el('button',cls,label);b.onclick=()=>{ov.remove();fn()};return b};
   const row=el('div','row');row.append(go('Instagram + TikTok (easiest)','primary',openQuick),go('YouTube',null,()=>openAccounts('youtube')));
@@ -471,7 +472,7 @@ function openQuick(){
   for(const [p,f] of [['Zernio did not accept this key','Copy the key again with its copy button and paste it with nothing before or after it.'],['An account says "not found in Zernio"','Connect it in the Zernio dashboard (step 2), then press Check again.'],['Instagram will not connect in Zernio','The Instagram account must be a professional (business or creator) account linked to a Facebook page.'],['A post fails','The reason is shown in the share result; the same text also appears in the Zernio dashboard under that post.']]){const li=el('li');li.append(el('b',null,p+': '),f);ul.append(li)}
   trb.append(ul);box.append(trb);
   const paint=S=>{res.replaceChildren();tt.value=S.tiktok_mode||'public';
-    for(const k of ['instagram','tiktok']){const r=el('div','row'),ok=!!(S.accounts||{})[k];r.append(el('b',null,shareInfo.platforms[k].label),el('span','chip'+(ok?' ok':''),ok?'✅ Connected'+(S.accounts[k].name?' · '+S.accounts[k].name:''):S.saved?'Not found in Zernio yet':'Not connected'));res.append(r)}
+    for(const k of ['instagram','tiktok']){const r=el('div','row'),ok=!!(S.accounts||{})[k];r.append(el('b',null,((shareInfo.platforms||{})[k]||{label:k}).label),el('span','chip'+(ok?' ok':''),ok?'✅ Connected'+(S.accounts[k].name?' · '+S.accounts[k].name:''):S.saved?'Not found in Zernio yet':'Not connected'));res.append(r)}
     if(S.accounts&&S.accounts.youtube)res.append(el('div','mut','YouTube is also connected in Zernio and will be posted through it.'));
     if(S.warning){const w=el('div','note bad');w.textContent=S.warning;res.append(w)}
     go.textContent=S.saved?'Replace key':'Save and check';again.style.display=off.style.display=S.saved?'':'none';ttRow.style.display=S.saved?'':'none'};
@@ -587,7 +588,7 @@ document.getElementById('upd').onclick=()=>{sig='';lastAct=0;load(true)};
     const cl=el('button',null,'Close');cl.onclick=()=>ov.remove();box.append(cl);document.body.append(ov)}}
 {const sb=document.getElementById('setupBtn'),sl=document.getElementById('setupList');sb.onclick=e=>{e.stopPropagation();sl.hidden=!sl.hidden};sl.onclick=()=>{sl.hidden=true};document.addEventListener('click',e=>{if(!sb.contains(e.target))sl.hidden=true})}
 document.getElementById('purge').onclick=async()=>{if(confirm('Permanently delete every trashed clip file?')){await post('/api/purge',{});load(true)}};
-document.getElementById('folders').onclick=openFolders;document.getElementById('connect').onclick=openConnect;Promise.all([loadLayouts(),loadShare()]).then(()=>{load(true);if(!(shareInfo.providers||[]).some(p=>p.automatic&&p.configured)){const sb=document.getElementById('setupBtn');sb.classList.add('dot');sb.title='No account connected for posting yet: open Connect accounts'}const m=location.hash.match(/connect=([a-z]*)/);if(m)m[1]?openAccounts(m[1]):openConnect()});(function tick(){setTimeout(async()=>{try{await load(false)}catch(e){}tick()},clips.some(exBusy)?1500:10000)})();
+document.getElementById('folders').onclick=openFolders;document.getElementById('connect').onclick=openConnect;Promise.all([loadLayouts(),loadShare()]).then(()=>{load(true);const m=location.hash.match(/connect=([a-z]*)/);if(m)m[1]?openAccounts(m[1]):openConnect()});(function tick(){setTimeout(async()=>{try{await load(false)}catch(e){}tick()},clips.some(exBusy)?1500:10000)})();
 </script>"""
 
 PAGE = PAGE.replace("/*__AP__*/", autopilot_page.JS).replace("/*__CP__*/", campaigns_page.JS).replace("/*__RF__*/", reframe_page.JS)
